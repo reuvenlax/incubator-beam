@@ -543,7 +543,9 @@ public class BigQueryIOTest implements Serializable {
 
     @Override
     public long insertAll(
-        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
+        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
+        SerializableFunction<ErrorProto, Boolean> shouldRetry,
+        List<TableRow> deadLetter)
         throws IOException, InterruptedException {
       throw new UnsupportedOperationException("Unsupported");
     }
@@ -631,7 +633,7 @@ public class BigQueryIOTest implements Serializable {
   }
 
   private void checkWriteObject(
-      BigQueryIO.Write.Bound bound, String project, String dataset, String table,
+      BigQueryIO.Write.BoundWithType bound, String project, String dataset, String table,
       TableSchema schema, CreateDisposition createDisposition,
       WriteDisposition writeDisposition) {
     checkWriteObjectWithValidate(
@@ -639,7 +641,7 @@ public class BigQueryIOTest implements Serializable {
   }
 
   private void checkWriteObjectWithValidate(
-      BigQueryIO.Write.Bound bound, String project, String dataset, String table,
+      BigQueryIO.Write.BoundWithType bound, String project, String dataset, String table,
       TableSchema schema, CreateDisposition createDisposition,
       WriteDisposition writeDisposition, boolean validate) {
     assertEquals(project, bound.getTable().getProjectId());
@@ -931,10 +933,10 @@ public class BigQueryIOTest implements Serializable {
 
     logged.verifyInfo("Starting BigQuery load job");
     logged.verifyInfo("BigQuery load job failed");
-    logged.verifyInfo("try 0/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyInfo("try 1/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyInfo("try 2/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyNotLogged("try 3/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 0/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 1/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 2/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyNotLogged("try 3/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
     File tempDir = new File(bqOptions.getTempLocation());
     testNumFiles(tempDir, 0);
   }
@@ -1027,7 +1029,8 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWrite() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write.to("foo.com:project:somedataset.sometable");
+    BigQueryIO.Write.BoundWithType bound =
+            BigQueryIO.Write.to("foo.com:project:somedataset.sometable");
     checkWriteObject(
         bound, "foo.com:project", "somedataset", "sometable",
         null, CreateDisposition.CREATE_IF_NEEDED, WriteDisposition.WRITE_EMPTY);
@@ -1053,7 +1056,7 @@ public class BigQueryIOTest implements Serializable {
     options.as(StreamingOptions.class).setStreaming(streaming);
     DisplayDataEvaluator evaluator = DisplayDataEvaluator.create(options);
 
-    BigQueryIO.Write.Bound write = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType write = BigQueryIO.Write
         .to("project:dataset.table")
         .withSchema(new TableSchema().set("col1", "type1").set("col2", "type2"))
         .withTestServices(new FakeBigQueryServices()
@@ -1073,7 +1076,7 @@ public class BigQueryIOTest implements Serializable {
   public void testBuildWriteWithoutValidation() {
     // This test just checks that using withoutValidation will not trigger object
     // construction errors.
-    BigQueryIO.Write.Bound bound =
+    BigQueryIO.Write.BoundWithType bound =
         BigQueryIO.Write.to("foo.com:project:somedataset.sometable").withoutValidation();
     checkWriteObjectWithValidate(
         bound, "foo.com:project", "somedataset", "sometable",
@@ -1082,7 +1085,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteDefaultProject() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write.to("somedataset.sometable");
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write.to("somedataset.sometable");
     checkWriteObject(
         bound, null, "somedataset", "sometable",
         null, CreateDisposition.CREATE_IF_NEEDED, WriteDisposition.WRITE_EMPTY);
@@ -1094,7 +1097,7 @@ public class BigQueryIOTest implements Serializable {
         .setProjectId("foo.com:project")
         .setDatasetId("somedataset")
         .setTableId("sometable");
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write.to(table);
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write.to(table);
     checkWriteObject(
         bound, "foo.com:project", "somedataset", "sometable",
         null, CreateDisposition.CREATE_IF_NEEDED, WriteDisposition.WRITE_EMPTY);
@@ -1113,7 +1116,7 @@ public class BigQueryIOTest implements Serializable {
   @Test
   public void testBuildWriteWithSchema() {
     TableSchema schema = new TableSchema();
-    BigQueryIO.Write.Bound bound =
+    BigQueryIO.Write.BoundWithType bound =
         BigQueryIO.Write.to("foo.com:project:somedataset.sometable").withSchema(schema);
     checkWriteObject(
         bound, "foo.com:project", "somedataset", "sometable",
@@ -1122,7 +1125,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteWithCreateDispositionNever() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write
         .to("foo.com:project:somedataset.sometable")
         .withCreateDisposition(CreateDisposition.CREATE_NEVER);
     checkWriteObject(
@@ -1132,7 +1135,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteWithCreateDispositionIfNeeded() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write
         .to("foo.com:project:somedataset.sometable")
         .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED);
     checkWriteObject(
@@ -1142,7 +1145,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteWithWriteDispositionTruncate() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write
         .to("foo.com:project:somedataset.sometable")
         .withWriteDisposition(WriteDisposition.WRITE_TRUNCATE);
     checkWriteObject(
@@ -1152,7 +1155,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteWithWriteDispositionAppend() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write
         .to("foo.com:project:somedataset.sometable")
         .withWriteDisposition(WriteDisposition.WRITE_APPEND);
     checkWriteObject(
@@ -1162,7 +1165,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWriteWithWriteDispositionEmpty() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType bound = BigQueryIO.Write
         .to("foo.com:project:somedataset.sometable")
         .withWriteDisposition(WriteDisposition.WRITE_EMPTY);
     checkWriteObject(
@@ -1175,7 +1178,7 @@ public class BigQueryIOTest implements Serializable {
     String tableSpec = "project:dataset.table";
     TableSchema schema = new TableSchema().set("col1", "type1").set("col2", "type2");
 
-    BigQueryIO.Write.Bound write = BigQueryIO.Write
+    BigQueryIO.Write.BoundWithType write = BigQueryIO.Write
         .to(tableSpec)
         .withSchema(schema)
         .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
@@ -1724,7 +1727,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testWritePartitionSinglePartition() throws Exception {
-    long numFiles = BigQueryIO.Write.Bound.MAX_NUM_FILES;
+    long numFiles = BigQueryIO.Write.BoundWithType.MAX_NUM_FILES;
     long fileSize = 1;
 
     // One partition is needed.
@@ -1734,7 +1737,7 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testWritePartitionManyFiles() throws Exception {
-    long numFiles = BigQueryIO.Write.Bound.MAX_NUM_FILES * 3;
+    long numFiles = BigQueryIO.Write.BoundWithType.MAX_NUM_FILES * 3;
     long fileSize = 1;
 
     // One partition is needed for each group of BigQueryWrite.MAX_NUM_FILES files.
@@ -1745,7 +1748,7 @@ public class BigQueryIOTest implements Serializable {
   @Test
   public void testWritePartitionLargeFileSize() throws Exception {
     long numFiles = 10;
-    long fileSize = BigQueryIO.Write.Bound.MAX_SIZE_BYTES / 3;
+    long fileSize = BigQueryIO.Write.BoundWithType.MAX_SIZE_BYTES / 3;
 
     // One partition is needed for each group of three files.
     long expectedNumPartitions = 4;
@@ -1854,9 +1857,9 @@ public class BigQueryIOTest implements Serializable {
 
     logged.verifyInfo("Starting BigQuery load job");
     logged.verifyInfo("BigQuery load job failed");
-    logged.verifyInfo("try 0/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyInfo("try 1/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyNotLogged("try 2/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 0/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 1/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyNotLogged("try 2/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
 
     assertEquals(expectedTempTables, tempTables);
   }
@@ -1926,9 +1929,9 @@ public class BigQueryIOTest implements Serializable {
 
     logged.verifyInfo("Starting BigQuery copy job");
     logged.verifyInfo("BigQuery copy job failed");
-    logged.verifyInfo("try 0/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyInfo("try 1/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
-    logged.verifyNotLogged("try 2/" + BigQueryIO.Write.Bound.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 0/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyInfo("try 1/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
+    logged.verifyNotLogged("try 2/" + BigQueryIO.Write.BoundWithType.MAX_RETRY_JOBS);
   }
 
   @Test
