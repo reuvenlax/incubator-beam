@@ -18,6 +18,7 @@
 package org.apache.beam.sdk.io.gcp.bigquery;
 
 import com.google.api.services.bigquery.model.Dataset;
+import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
 import com.google.api.services.bigquery.model.JobConfigurationLoad;
@@ -35,6 +36,7 @@ import java.util.NoSuchElementException;
 import javax.annotation.Nullable;
 
 import org.apache.beam.sdk.options.BigQueryOptions;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 
 /** An interface for real, mock, or fake implementations of Cloud BigQuery services. */
 interface BigQueryServices extends Serializable {
@@ -164,7 +166,9 @@ interface BigQueryServices extends Serializable {
      *
      * <p>Returns the total bytes count of {@link TableRow TableRows}.
      */
-    long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
+    long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
+                   SerializableFunction<ErrorProto, Boolean> shouldRetry,
+                   List<TableRow> deadLetter)
         throws IOException, InterruptedException;
   }
 

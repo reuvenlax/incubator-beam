@@ -28,6 +28,7 @@ import com.google.api.client.util.Sleeper;
 import com.google.api.services.bigquery.Bigquery;
 import com.google.api.services.bigquery.model.Dataset;
 import com.google.api.services.bigquery.model.DatasetReference;
+import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfiguration;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
@@ -622,7 +623,9 @@ class BigQueryServicesImpl implements BigQueryServices {
 
     @VisibleForTesting
     long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
-        BackOff backoff, final Sleeper sleeper) throws IOException, InterruptedException {
+        BackOff backoff, final Sleeper sleeper,
+        SerializableFunction<ErrorProto, Boolean> shouldRetry,
+        List<TableRow> deadLetter) throws IOException, InterruptedException {
       checkNotNull(ref, "ref");
       if (executor == null) {
         this.executor = options.as(GcsOptions.class).getExecutorService();
@@ -708,14 +711,27 @@ class BigQueryServicesImpl implements BigQueryServices {
             List<TableDataInsertAllResponse.InsertErrors> errors = futures.get(i).get();
             if (errors != null) {
               for (TableDataInsertAllResponse.InsertErrors error : errors) {
+                boolean skip_retry = false;
+                if (shouldRetry != null) {
+                  for (ErrorProto errorProto : error.getErrors()) {
+                    if (!shouldRetry.apply(errorProto)) {
+                      skip_retry = true;
+                      break;
+                    }
+                  }
+                }
                 if (error.getIndex() == null) {
                   throw new IOException("Insert failed: " + allErrors);
                 }
                 int errorIndex = error.getIndex().intValue() + strideIndices.get(i);
-                allErrors.add(error);
-                retryRows.add(rowsToPublish.get(errorIndex));
-                if (retryIds != null) {
-                  retryIds.add(idsToPublish.get(errorIndex));
+                if (skip_retry) {
+                  deadLetter.add(rowsToPublish.get(errorIndex));
+                } else {
+                  allErrors.add(error);
+                  retryRows.add(rowsToPublish.get(errorIndex));
+                  if (retryIds != null) {
+                    retryIds.add(idsToPublish.get(errorIndex));
+                  }
                 }
               }
             }
@@ -755,10 +771,12 @@ class BigQueryServicesImpl implements BigQueryServices {
 
     @Override
     public long insertAll(
-            TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
+        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
+        SerializableFunction<ErrorProto, Boolean> shouldRetry, List<TableRow> deadLetter)
         throws IOException, InterruptedException {
           return insertAll(
-              ref, rowList, insertIdList, INSERT_BACKOFF_FACTORY.backoff(), Sleeper.DEFAULT);
+              ref, rowList, insertIdList, INSERT_BACKOFF_FACTORY.backoff(), Sleeper.DEFAULT,
+              shouldRetry, deadLetter);
     }
   }
 
