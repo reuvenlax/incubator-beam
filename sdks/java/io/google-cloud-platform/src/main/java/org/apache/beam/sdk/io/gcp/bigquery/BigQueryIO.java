@@ -25,7 +25,6 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.services.bigquery.Bigquery;
-import com.google.api.services.bigquery.model.ErrorProto;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
 import com.google.api.services.bigquery.model.JobConfigurationLoad;
@@ -34,6 +33,7 @@ import com.google.api.services.bigquery.model.JobConfigurationTableCopy;
 import com.google.api.services.bigquery.model.JobReference;
 import com.google.api.services.bigquery.model.JobStatistics;
 import com.google.api.services.bigquery.model.JobStatus;
+import com.google.api.services.bigquery.model.TableDataInsertAllResponse;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
@@ -71,6 +71,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
+
 import org.apache.avro.generic.GenericRecord;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.AtomicCoder;
@@ -1406,18 +1407,31 @@ public class BigQueryIO {
       WRITE_EMPTY
     }
 
+    static public class RetryContext {
+      public RetryContext(TableDataInsertAllResponse.InsertErrors errors) {
+        this.errors = errors;
+      }
+
+      // The insert errors corresponding to a specific record.
+      TableDataInsertAllResponse.InsertErrors errors;
+    }
+
+    static public abstract class RetryPolicy {
+      abstract boolean shouldRetry(RetryContext retryContext);
+    }
+
     /**
      * Creates a write transformation for the given table specification.
      *
      * <p>Refer to {@link #parseTableSpec(String)} for the specification format.
      */
-    public static BoundWithType<PDone> to(String tableSpec) {
-      return new BoundWithType<PDone>().to(tableSpec);
+    public static Bound<PDone> to(String tableSpec) {
+      return new Bound<PDone>().to(tableSpec);
     }
 
     /** Creates a write transformation for the given table. */
-    public static BoundWithType<PDone> to(TableReference table) {
-      return new BoundWithType<PDone>().to(table);
+    public static Bound<PDone> to(TableReference table) {
+      return new Bound<PDone>().to(table);
     }
 
     /**
@@ -1431,9 +1445,9 @@ public class BigQueryIO {
      * <p>{@code tableSpecFunction} should be deterministic. When given the same window, it should
      * always return the same table specification.
      */
-    public static BoundWithType<PDone> to(
+    public static Bound<PDone> to(
             SerializableFunction<BoundedWindow, String> tableSpecFunction) {
-      return new BoundWithType<PDone>().to(tableSpecFunction);
+      return new Bound<PDone>().to(tableSpecFunction);
     }
 
     /**
@@ -1443,9 +1457,9 @@ public class BigQueryIO {
      * <p>{@code tableRefFunction} should be deterministic. When given the same window, it should
      * always return the same table reference.
      */
-    public static BoundWithType<PDone> toTableReference(
+    public static Bound<PDone> toTableReference(
         SerializableFunction<BoundedWindow, TableReference> tableRefFunction) {
-      return new BoundWithType<PDone>().toTableReference(tableRefFunction);
+      return new Bound<PDone>().toTableReference(tableRefFunction);
     }
 
     /**
@@ -1455,37 +1469,36 @@ public class BigQueryIO {
      * exist, and {@link CreateDisposition} is set to
      * {@link CreateDisposition#CREATE_IF_NEEDED}.
      */
-    public static BoundWithType withSchema(TableSchema schema) {
-      return new BoundWithType<PDone>().withSchema(schema);
+    public static Bound withSchema(TableSchema schema) {
+      return new Bound<PDone>().withSchema(schema);
     }
 
     /** Creates a write transformation with the specified options for creating the table. */
-    public static BoundWithType<PDone> withCreateDisposition(CreateDisposition disposition) {
-      return new BoundWithType<PDone>().withCreateDisposition(disposition);
+    public static Bound<PDone> withCreateDisposition(CreateDisposition disposition) {
+      return new Bound<PDone>().withCreateDisposition(disposition);
     }
 
     /** Creates a write transformation with the specified options for writing to the table. */
-    public static BoundWithType<PDone> withWriteDisposition(WriteDisposition disposition) {
-      return new BoundWithType<PDone>().withWriteDisposition(disposition);
+    public static Bound<PDone> withWriteDisposition(WriteDisposition disposition) {
+      return new Bound<PDone>().withWriteDisposition(disposition);
     }
 
     /**
      * Creates a write transformation with BigQuery table validation disabled.
      */
-    public static BoundWithType<PDone> withoutValidation() {
-      return new BoundWithType<PDone>().withoutValidation();
+    public static Bound<PDone> withoutValidation() {
+      return new Bound<PDone>().withoutValidation();
     }
 
-    public static BoundWithType<PCollection<TableRow>> withBadRowPolicy(
-            SerializableFunction<ErrorProto, Boolean> shouldRetry) {
-      return new BoundWithType<PCollection<TableRow>>().withBadRowPolicy(shouldRetry);
+    public static Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
+      return new Bound<PCollection<TableRow>>().withBadRowPolicy(shouldRetry);
     }
 
     /**
      * A {@link PTransform} that can write either a bounded or unbounded
      * {@link PCollection} of {@link TableRow TableRows} to a BigQuery table.
      */
-    public static class BoundWithType<OutType extends POutput>
+    public static class Bound<OutType extends POutput>
             extends PTransform<PCollection<TableRow>, OutType> {
       // Maximum number of files in a single partition.
       static final int MAX_NUM_FILES = 10000;
@@ -1518,7 +1531,7 @@ public class BigQueryIO {
       // An option to indicate if table validation is desired. Default is true.
       final boolean validate;
 
-      final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+      final RetryPolicy shouldRetry;
 
       @Nullable private BigQueryServices bigQueryServices;
 
@@ -1542,7 +1555,7 @@ public class BigQueryIO {
        * instance of this class.
        */
       @Deprecated
-      public BoundWithType() {
+      public Bound() {
         this(
             null /* name */,
             null /* jsonTableRef */,
@@ -1555,12 +1568,12 @@ public class BigQueryIO {
             null /* shouldRetry */);
       }
 
-      private BoundWithType(String name, @Nullable String jsonTableRef,
-          @Nullable SerializableFunction<BoundedWindow, TableReference> tableRefFunction,
-          @Nullable String jsonSchema,
-          CreateDisposition createDisposition, WriteDisposition writeDisposition, boolean validate,
-          @Nullable BigQueryServices bigQueryServices,
-          @Nullable SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+      private Bound(String name, @Nullable String jsonTableRef,
+                    @Nullable SerializableFunction<BoundedWindow, TableReference> tableRefFunction,
+                    @Nullable String jsonSchema,
+                    CreateDisposition createDisposition, WriteDisposition writeDisposition, boolean validate,
+                    @Nullable BigQueryServices bigQueryServices,
+                    @Nullable RetryPolicy shouldRetry) {
         super(name);
         this.jsonTableRef = jsonTableRef;
         this.tableRefFunction = tableRefFunction;
@@ -1578,7 +1591,7 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> to(String tableSpec) {
+      public Bound<OutType> to(String tableSpec) {
         return to(parseTableSpec(tableSpec));
       }
 
@@ -1587,8 +1600,8 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> to(TableReference table) {
-        return new BoundWithType<>(name, toJsonString(table), tableRefFunction, jsonSchema,
+      public Bound<OutType> to(TableReference table) {
+        return new Bound<>(name, toJsonString(table), tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1601,7 +1614,7 @@ public class BigQueryIO {
        * <p>{@code tableSpecFunction} should be deterministic. When given the same window, it
        * should always return the same table specification.
        */
-      public BoundWithType<OutType> to(
+      public Bound<OutType> to(
           SerializableFunction<BoundedWindow, String> tableSpecFunction) {
         return toTableReference(new TranslateTableSpecFunction(tableSpecFunction));
       }
@@ -1615,9 +1628,9 @@ public class BigQueryIO {
        * <p>{@code tableRefFunction} should be deterministic. When given the same window, it should
        * always return the same table reference.
        */
-      public BoundWithType<OutType> toTableReference(
+      public Bound<OutType> toTableReference(
           SerializableFunction<BoundedWindow, TableReference> tableRefFunction) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1627,8 +1640,8 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> withSchema(TableSchema schema) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, toJsonString(schema),
+      public Bound<OutType> withSchema(TableSchema schema) {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, toJsonString(schema),
             createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1637,8 +1650,8 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> withCreateDisposition(CreateDisposition createDisposition) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+      public Bound<OutType> withCreateDisposition(CreateDisposition createDisposition) {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1647,8 +1660,8 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> withWriteDisposition(WriteDisposition writeDisposition) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+      public Bound<OutType> withWriteDisposition(WriteDisposition writeDisposition) {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1657,21 +1670,20 @@ public class BigQueryIO {
        *
        * <p>Does not modify this object.
        */
-      public BoundWithType<OutType> withoutValidation() {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+      public Bound<OutType> withoutValidation() {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, false, bigQueryServices, shouldRetry);
       }
 
       @VisibleForTesting
-      BoundWithType<OutType> withTestServices(BigQueryServices testServices) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+      Bound<OutType> withTestServices(BigQueryServices testServices) {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, testServices, shouldRetry);
       }
 
       @VisibleForTesting
-      BoundWithType<PCollection<TableRow>> withBadRowPolicy(
-              SerializableFunction<ErrorProto, Boolean> shouldRetry) {
-        return new BoundWithType<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+      Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -2067,8 +2079,8 @@ public class BigQueryIO {
         List<String> currResults = Lists.newArrayList();
         for (int i = 0; i < results.size(); ++i) {
           KV<String, Long> fileResult = results.get(i);
-          if (currNumFiles + 1 > BoundWithType.MAX_NUM_FILES
-              || currSizeBytes + fileResult.getValue() > BoundWithType.MAX_SIZE_BYTES) {
+          if (currNumFiles + 1 > Bound.MAX_NUM_FILES
+              || currSizeBytes + fileResult.getValue() > Bound.MAX_SIZE_BYTES) {
             c.sideOutput(multiPartitionsTag, KV.of(++partitionId, currResults));
             currResults = Lists.newArrayList();
             currNumFiles = 0;
@@ -2157,15 +2169,15 @@ public class BigQueryIO {
             .setSourceFormat("NEWLINE_DELIMITED_JSON");
 
         String projectId = ref.getProjectId();
-        for (int i = 0; i < BoundWithType.MAX_RETRY_JOBS; ++i) {
+        for (int i = 0; i < Bound.MAX_RETRY_JOBS; ++i) {
           String jobId = jobIdPrefix + "-" + i;
-          LOG.info("Starting BigQuery load job {}: try {}/{}", jobId, i, BoundWithType.MAX_RETRY_JOBS);
+          LOG.info("Starting BigQuery load job {}: try {}/{}", jobId, i, Bound.MAX_RETRY_JOBS);
           JobReference jobRef = new JobReference()
               .setProjectId(projectId)
               .setJobId(jobId);
           jobService.startLoadJob(jobRef, loadConfig);
           Status jobStatus =
-              parseStatus(jobService.pollJob(jobRef, BoundWithType.LOAD_JOB_POLL_MAX_RETRIES));
+              parseStatus(jobService.pollJob(jobRef, Bound.LOAD_JOB_POLL_MAX_RETRIES));
           switch (jobStatus) {
             case SUCCEEDED:
               return;
@@ -2180,7 +2192,7 @@ public class BigQueryIO {
           }
         }
         throw new RuntimeException(String.format("Failed to create the load job %s, reached max "
-            + "retries: %d", jobIdPrefix, BoundWithType.MAX_RETRY_JOBS));
+            + "retries: %d", jobIdPrefix, Bound.MAX_RETRY_JOBS));
       }
 
       static void removeTemporaryFiles(
@@ -2287,15 +2299,15 @@ public class BigQueryIO {
             .setCreateDisposition(createDisposition.name());
 
         String projectId = ref.getProjectId();
-        for (int i = 0; i < BoundWithType.MAX_RETRY_JOBS; ++i) {
+        for (int i = 0; i < Bound.MAX_RETRY_JOBS; ++i) {
           String jobId = jobIdPrefix + "-" + i;
-          LOG.info("Starting BigQuery copy job {}: try {}/{}", jobId, i, BoundWithType.MAX_RETRY_JOBS);
+          LOG.info("Starting BigQuery copy job {}: try {}/{}", jobId, i, Bound.MAX_RETRY_JOBS);
           JobReference jobRef = new JobReference()
               .setProjectId(projectId)
               .setJobId(jobId);
           jobService.startCopyJob(jobRef, copyConfig);
           Status jobStatus =
-              parseStatus(jobService.pollJob(jobRef, BoundWithType.LOAD_JOB_POLL_MAX_RETRIES));
+              parseStatus(jobService.pollJob(jobRef, Bound.LOAD_JOB_POLL_MAX_RETRIES));
           switch (jobStatus) {
             case SUCCEEDED:
               return;
@@ -2310,7 +2322,7 @@ public class BigQueryIO {
           }
         }
         throw new RuntimeException(String.format("Failed to create the copy job %s, reached max "
-            + "retries: %d", jobIdPrefix, BoundWithType.MAX_RETRY_JOBS));
+            + "retries: %d", jobIdPrefix, Bound.MAX_RETRY_JOBS));
       }
 
       static void removeTemporaryTables(DatasetService tableService,
@@ -2396,7 +2408,7 @@ public class BigQueryIO {
 
     private final BigQueryServices bqServices;
 
-    private final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+    private final Write.RetryPolicy shouldRetry;
 
     /** JsonTableRows to accumulate BigQuery rows in order to batch writes. */
     private transient Map<String, List<TableRow>> tableRows;
@@ -2415,7 +2427,7 @@ public class BigQueryIO {
 
     /** Constructor. */
     StreamingWriteFn(TableSchema schema, BigQueryServices bqServices,
-                     SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+                     Write.RetryPolicy shouldRetry) {
       this.jsonTableSchema = toJsonString(schema);
       this.bqServices = checkNotNull(bqServices, "bqServices");
       this.shouldRetry = shouldRetry;
@@ -2446,6 +2458,7 @@ public class BigQueryIO {
 
       for (Map.Entry<String, List<TableRow>> entry : tableRows.entrySet()) {
         TableReference tableReference = getOrCreateTable(options, entry.getKey());
+        System.out.print("flushing " + this);
         List<TableRow> deadLetter = flushRows(tableReference, entry.getValue(),
             uniqueIdsForTableRows.get(entry.getKey()), options);
         for (TableRow failed : deadLetter) {
@@ -2464,8 +2477,8 @@ public class BigQueryIO {
         .withLabel("Table Schema"));
     }
 
-    public TableReference getOrCreateTable(BigQueryOptions options, String tableSpec)
-        throws IOException {
+    public  TableReference getOrCreateTable(BigQueryOptions options, String tableSpec)
+        throws InterruptedException, IOException {
       TableReference tableReference = parseTableSpec(tableSpec);
       if (!createdTables.contains(tableSpec)) {
         synchronized (createdTables) {
@@ -2474,9 +2487,7 @@ public class BigQueryIO {
           // every thread from attempting a create and overwhelming our BigQuery quota.
           if (!createdTables.contains(tableSpec)) {
             TableSchema tableSchema = JSON_FACTORY.fromString(jsonTableSchema, TableSchema.class);
-            Bigquery client = Transport.newBigQueryClient(options).build();
-            BigQueryTableInserter inserter = new BigQueryTableInserter(client, options);
-            inserter.getOrCreateTable(tableReference, Write.WriteDisposition.WRITE_APPEND,
+            bqServices.getDatasetService(options).getOrCreateTable(tableReference, Write.WriteDisposition.WRITE_APPEND,
                 Write.CreateDisposition.CREATE_IF_NEEDED, tableSchema);
             createdTables.add(tableSpec);
           }
@@ -2488,7 +2499,7 @@ public class BigQueryIO {
     /**
      * Writes the accumulated rows into BigQuery with streaming API.
      */
-    private List<TableRow> flushRows(TableReference tableReference,
+    private  List<TableRow> flushRows(TableReference tableReference,
         List<TableRow> tableRows, List<String> uniqueIds, BigQueryOptions options)
             throws InterruptedException {
       List<TableRow> deadLetter = Lists.newArrayList();
@@ -2712,7 +2723,7 @@ public class BigQueryIO {
     private final SerializableFunction<BoundedWindow, TableReference> tableRefFunction;
     private final transient TableSchema tableSchema;
     private final BigQueryServices bqServices;
-    private final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+    private final Write.RetryPolicy shouldRetry;
 
 
     /** Constructor. */
@@ -2720,7 +2731,7 @@ public class BigQueryIO {
         SerializableFunction<BoundedWindow, TableReference> tableRefFunction,
         TableSchema tableSchema,
         BigQueryServices bqServices,
-        SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+        Write.RetryPolicy shouldRetry) {
       this.tableReference = tableReference;
       this.tableRefFunction = tableRefFunction;
       this.tableSchema = tableSchema;
