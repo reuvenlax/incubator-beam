@@ -44,9 +44,11 @@ import com.google.api.services.bigquery.model.TableDataInsertAllResponse;
 import com.google.api.services.bigquery.model.TableDataList;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import com.google.cloud.hadoop.util.ApiErrorExtractor;
 import com.google.common.annotations.VisibleForTesting;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -478,6 +480,71 @@ class BigQueryServicesImpl implements BigQueryServices {
       }
     }
 
+
+    /**
+     * Tries to create the BigQuery table.
+     * If a table with the same name already exists in the dataset, the table
+     * creation fails, and the function returns null.  In such a case,
+     * the existing table doesn't necessarily have the same schema as specified
+     * by the parameter.
+     *
+     * @param schema Schema of the new BigQuery table.
+     * @return The newly created BigQuery table information, or null if the table
+     *     with the same name already exists.
+     * @throws IOException if other error than already existing table occurs.
+     */
+    @Nullable
+    private Table tryCreateTable(TableReference ref, TableSchema schema) throws IOException {
+      LOG.info("Trying to create BigQuery table: {}", BigQueryIO.toTableSpec(ref));
+      BackOff backoff =
+              new ExponentialBackOff.Builder()
+                      .setMaxElapsedTimeMillis(RETRY_CREATE_TABLE_DURATION_MILLIS)
+                      .build();
+
+      Table table = new Table().setTableReference(ref).setSchema(schema);
+      return tryCreateTable(table, ref.getProjectId(), ref.getDatasetId(), backoff, Sleeper.DEFAULT);
+    }
+
+    @VisibleForTesting
+    @Nullable
+    Table tryCreateTable(
+            Table table, String projectId, String datasetId, BackOff backoff, Sleeper sleeper)
+            throws IOException {
+      boolean retry = false;
+      while (true) {
+        try {
+          return client.tables().insert(projectId, datasetId, table).execute();
+        } catch (IOException e) {
+          ApiErrorExtractor extractor = new ApiErrorExtractor();
+          if (extractor.itemAlreadyExists(e)) {
+            // The table already exists, nothing to return.
+            return null;
+          } else if (extractor.rateLimited(e)) {
+            // The request failed because we hit a temporary quota. Back off and try again.
+            try {
+              if (BackOffUtils.next(sleeper, backoff)) {
+                if (!retry) {
+                  LOG.info(
+                          "Quota limit reached when creating table {}:{}.{}, retrying up to {} minutes",
+                          projectId,
+                          datasetId,
+                          table.getTableReference().getTableId(),
+                          TimeUnit.MILLISECONDS.toSeconds(RETRY_CREATE_TABLE_DURATION_MILLIS) / 60.0);
+                  retry = true;
+                }
+                continue;
+              }
+            } catch (InterruptedException e1) {
+              // Restore interrupted state and throw the last failure.
+              Thread.currentThread().interrupt();
+              throw e;
+            }
+          }
+          throw e;
+        }
+      }
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -624,7 +691,7 @@ class BigQueryServicesImpl implements BigQueryServices {
     @VisibleForTesting
     long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
         BackOff backoff, final Sleeper sleeper,
-        SerializableFunction<ErrorProto, Boolean> shouldRetry,
+        BigQueryIO.Write.RetryPolicy shouldRetry,
         List<TableRow> deadLetter) throws IOException, InterruptedException {
       checkNotNull(ref, "ref");
       if (executor == null) {
@@ -711,18 +778,12 @@ class BigQueryServicesImpl implements BigQueryServices {
             List<TableDataInsertAllResponse.InsertErrors> errors = futures.get(i).get();
             if (errors != null) {
               for (TableDataInsertAllResponse.InsertErrors error : errors) {
-                boolean skip_retry = false;
-                if (shouldRetry != null) {
-                  for (ErrorProto errorProto : error.getErrors()) {
-                    if (!shouldRetry.apply(errorProto)) {
-                      skip_retry = true;
-                      break;
-                    }
-                  }
-                }
                 if (error.getIndex() == null) {
                   throw new IOException("Insert failed: " + allErrors);
                 }
+
+                boolean skip_retry = shouldRetry != null && !shouldRetry.shouldRetry(
+                        new BigQueryIO.Write.RetryContext(error));
                 int errorIndex = error.getIndex().intValue() + strideIndices.get(i);
                 if (skip_retry) {
                   deadLetter.add(rowsToPublish.get(errorIndex));
@@ -771,8 +832,8 @@ class BigQueryServicesImpl implements BigQueryServices {
 
     @Override
     public long insertAll(
-        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
-        SerializableFunction<ErrorProto, Boolean> shouldRetry, List<TableRow> deadLetter)
+            TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
+            BigQueryIO.Write.RetryPolicy shouldRetry, List<TableRow> deadLetter)
         throws IOException, InterruptedException {
           return insertAll(
               ref, rowList, insertIdList, INSERT_BACKOFF_FACTORY.backoff(), Sleeper.DEFAULT,

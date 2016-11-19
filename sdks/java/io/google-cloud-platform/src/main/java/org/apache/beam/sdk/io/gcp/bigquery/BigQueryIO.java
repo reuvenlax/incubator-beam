@@ -25,6 +25,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.services.bigquery.model.ErrorProto;
+import com.google.api.services.bigquery.Bigquery;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
 import com.google.api.services.bigquery.model.JobConfigurationLoad;
@@ -34,6 +35,7 @@ import com.google.api.services.bigquery.model.JobReference;
 import com.google.api.services.bigquery.model.JobStatistics;
 import com.google.api.services.bigquery.model.JobStatus;
 import com.google.api.services.bigquery.model.Table;
+import com.google.api.services.bigquery.model.TableDataInsertAllResponse;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
@@ -71,6 +73,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
+
 import org.apache.avro.generic.GenericRecord;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.AtomicCoder;
@@ -1534,6 +1537,19 @@ public class BigQueryIO {
       WRITE_EMPTY
     }
 
+    static public class RetryContext {
+      public RetryContext(TableDataInsertAllResponse.InsertErrors errors) {
+        this.errors = errors;
+      }
+
+      // The insert errors corresponding to a specific record.
+      TableDataInsertAllResponse.InsertErrors errors;
+    }
+
+    static public abstract class RetryPolicy {
+      abstract boolean shouldRetry(RetryContext retryContext);
+    }
+
     /**
      * Creates a write transformation for the given table specification.
      *
@@ -1616,8 +1632,7 @@ public class BigQueryIO {
       return new Bound<PDone>().withoutValidation();
     }
 
-    public static Bound<PCollection<TableRow>> withBadRowPolicy(
-            SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+    public static Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
       return new Bound<PCollection<TableRow>>().withBadRowPolicy(shouldRetry);
     }
 
@@ -1658,7 +1673,7 @@ public class BigQueryIO {
       // An option to indicate if table validation is desired. Default is true.
       final boolean validate;
 
-      final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+      final RetryPolicy shouldRetry;
 
       @Nullable private BigQueryServices bigQueryServices;
 
@@ -1700,7 +1715,7 @@ public class BigQueryIO {
                     @Nullable ValueProvider<String> jsonSchema,
                     CreateDisposition createDisposition, WriteDisposition writeDisposition, boolean validate,
                     @Nullable BigQueryServices bigQueryServices,
-                    @Nullable SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+                    @Nullable RetryPolicy shouldRetry) {
         super(name);
         this.jsonTableRef = jsonTableRef;
         this.tableRefFunction = tableRefFunction;
@@ -1748,7 +1763,7 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       private Bound<OutType> toTableRef(ValueProvider<TableReference> table) {
-        return new Bound<OutType>(name,
+        return new Bound<>(name,
             NestedValueProvider.of(table, new TableRefToJson()),
             tableRefFunction, jsonSchema, createDisposition,
             writeDisposition, validate, bigQueryServices, shouldRetry);
@@ -1779,8 +1794,8 @@ public class BigQueryIO {
        */
       public Bound<OutType> toTableReference(
           SerializableFunction<BoundedWindow, TableReference> tableRefFunction) {
-        return new Bound<OutType>(name, jsonTableRef, tableRefFunction, jsonSchema,
-            createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
+                createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
       /**
@@ -1790,7 +1805,7 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       public Bound<OutType> withSchema(TableSchema schema) {
-        return new Bound<OutType>(name, jsonTableRef, tableRefFunction,
+        return new Bound<>(name, jsonTableRef, tableRefFunction,
             StaticValueProvider.of(toJsonString(schema)),
             createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
@@ -1799,7 +1814,7 @@ public class BigQueryIO {
        * Like {@link #withSchema(TableSchema)}, but with a {@link ValueProvider}.
        */
       public Bound<OutType> withSchema(ValueProvider<TableSchema> schema) {
-        return new Bound<OutType>(name, jsonTableRef, tableRefFunction,
+        return new Bound<>(name, jsonTableRef, tableRefFunction,
             NestedValueProvider.of(schema, new TableSchemaToJsonSchema()),
             createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
@@ -1810,7 +1825,7 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       public Bound<OutType> withCreateDisposition(CreateDisposition createDisposition) {
-        return new Bound<OutType>(name, jsonTableRef, tableRefFunction, jsonSchema,
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1820,7 +1835,7 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       public Bound<OutType> withWriteDisposition(WriteDisposition writeDisposition) {
-        return new Bound<OutType>(name, jsonTableRef, tableRefFunction, jsonSchema,
+        return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
 
@@ -1841,8 +1856,7 @@ public class BigQueryIO {
       }
 
       @VisibleForTesting
-      Bound<PCollection<TableRow>> withBadRowPolicy(
-              SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+      Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
         return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
@@ -2595,7 +2609,7 @@ public class BigQueryIO {
 
     private final BigQueryServices bqServices;
 
-    private final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+    private final Write.RetryPolicy shouldRetry;
 
     /** JsonTableRows to accumulate BigQuery rows in order to batch writes. */
     private transient Map<String, List<TableRow>> tableRows;
@@ -2614,7 +2628,7 @@ public class BigQueryIO {
 
     /** Constructor. */
     StreamingWriteFn(ValueProvider<TableSchema> schema, BigQueryServices bqServices,
-                     SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+                     Write.RetryPolicy shouldRetry) {
       this.jsonTableSchema =
           NestedValueProvider.of(schema, new TableSchemaToJsonSchema());
       this.bqServices = checkNotNull(bqServices, "bqServices");
@@ -2655,6 +2669,7 @@ public class BigQueryIO {
 
       for (Map.Entry<String, List<TableRow>> entry : tableRows.entrySet()) {
         TableReference tableReference = getOrCreateTable(options, entry.getKey());
+        System.out.print("flushing " + this);
         List<TableRow> deadLetter = flushRows(tableReference, entry.getValue(),
             uniqueIdsForTableRows.get(entry.getKey()), options);
         for (TableRow failed : deadLetter) {
@@ -2673,7 +2688,7 @@ public class BigQueryIO {
         .withLabel("Table Schema"));
     }
 
-    public TableReference getOrCreateTable(BigQueryOptions options, String tableSpec)
+    public  TableReference getOrCreateTable(BigQueryOptions options, String tableSpec)
         throws InterruptedException, IOException {
       TableReference tableReference = parseTableSpec(tableSpec);
       if (!createdTables.contains(tableSpec)) {
@@ -2702,7 +2717,7 @@ public class BigQueryIO {
     /**
      * Writes the accumulated rows into BigQuery with streaming API.
      */
-    private List<TableRow> flushRows(TableReference tableReference,
+    private  List<TableRow> flushRows(TableReference tableReference,
         List<TableRow> tableRows, List<String> uniqueIds, BigQueryOptions options)
             throws InterruptedException {
       List<TableRow> deadLetter = Lists.newArrayList();
@@ -2927,7 +2942,7 @@ public class BigQueryIO {
     private final SerializableFunction<BoundedWindow, TableReference> tableRefFunction;
     private final transient ValueProvider<TableSchema> tableSchema;
     private final BigQueryServices bqServices;
-    private final SerializableFunction<ErrorProto, Boolean> shouldRetry;
+    private final Write.RetryPolicy shouldRetry;
 
 
     /** Constructor. */
@@ -2935,7 +2950,7 @@ public class BigQueryIO {
         SerializableFunction<BoundedWindow, TableReference> tableRefFunction,
       ValueProvider<TableSchema> tableSchema,
         BigQueryServices bqServices,
-        SerializableFunction<ErrorProto, Boolean> shouldRetry) {
+        Write.RetryPolicy shouldRetry) {
       this.tableReference = tableReference;
       this.tableRefFunction = tableRefFunction;
       this.tableSchema = tableSchema;

@@ -31,6 +31,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import autovalue.shaded.com.google.common.common.collect.Lists;
 import com.google.api.services.bigquery.Bigquery;
 import com.google.api.services.bigquery.model.Table;
 import com.google.api.services.bigquery.model.TableCell;
@@ -50,6 +51,8 @@ import java.util.List;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServicesImpl.DatasetServiceImpl;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
+import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
@@ -387,6 +390,7 @@ public class BigQueryUtilTest {
     verifyTableGet();
   }
 
+
   @Test
   public void testInsertAll() throws Exception, IOException {
     // Build up a list of indices to fail on each invocation. This should result in
@@ -414,6 +418,38 @@ public class BigQueryUtilTest {
       List<TableRow> deadLetter = new ArrayList<>();
       totalBytes = datasetService.insertAll(ref, rows, ids, null, deadLetter);
       assertTrue(deadLetter.isEmpty());
+    } finally {
+      verifyInsertAll(5);
+      // Each of the 25 rows is 23 bytes: "{f=[{v=foo}, {v=1234}]}"
+      assertEquals("Incorrect byte count", 25L * 23L, totalBytes);
+    }
+  }
+
+  @Test
+  public void testDeadLetter() throws Exception, IOException {
+    // Build up a list of indices to fail on each invocation. This should result in
+    // 5 calls to insertAll.
+    List<List<Long>> errorsIndices = new ArrayList<>();
+    errorsIndices.add(Arrays.asList(0L, 5L, 10L, 15L, 20L));
+    errorsIndices.add(Arrays.asList(0L, 2L, 4L));
+    errorsIndices.add(Arrays.asList(0L, 2L));
+    errorsIndices.add(new ArrayList<Long>());
+    onInsertAll(errorsIndices);
+
+    TableReference ref = BigQueryIO
+            .parseTableSpec("project:dataset.table");
+    DatasetServiceImpl datasetService = new DatasetServiceImpl(mockClient, options, 5);
+
+    List<TableRow> rows = new ArrayList<>();
+    List<String> ids = new ArrayList<>();
+    for (int i = 0; i < 25; ++i) {
+      rows.add(rawRow("foo", 1234));
+      ids.add(new String());
+    }
+
+    long totalBytes = 0;
+    try {
+      totalBytes = datasetService.insertAll(ref, rows, ids, null, null);
     } finally {
       verifyInsertAll(5);
       // Each of the 25 rows is 23 bytes: "{f=[{v=foo}, {v=1234}]}"

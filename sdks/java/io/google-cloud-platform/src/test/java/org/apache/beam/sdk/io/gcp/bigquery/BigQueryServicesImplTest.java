@@ -21,13 +21,12 @@ import static com.google.common.base.Verify.verifyNotNull;
 import static junit.framework.TestCase.assertNull;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import autovalue.shaded.com.google.common.common.collect.Lists;
 import com.google.api.client.googleapis.json.GoogleJsonError;
 import com.google.api.client.googleapis.json.GoogleJsonError.ErrorInfo;
 import com.google.api.client.googleapis.json.GoogleJsonErrorContainer;
@@ -66,6 +65,7 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServicesImpl.JobServiceImpl;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.ExpectedLogs;
 import org.apache.beam.sdk.testing.FastNanoClockAndSleeper;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.util.FluentBackoff;
 import org.apache.beam.sdk.util.RetryHttpRequestInitializer;
 import org.apache.beam.sdk.util.Transport;
@@ -392,11 +392,47 @@ public class BigQueryServicesImplTest {
         new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
     dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), null,
         null);
+    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), null, null);
     verify(response, times(2)).getStatusCode();
     verify(response, times(2)).getContent();
     verify(response, times(2)).getContentType();
     expectedLogs.verifyInfo("Retrying 1 failed inserts to BigQuery");
   }
+
+
+  @Test
+  public void testDeadLetter() throws Exception {
+    TableReference ref =
+            new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
+    List<TableRow> rows = ImmutableList.of(
+            new TableRow().set("row", "a"), new TableRow().set("row", "b"));
+    List<String> insertIds = ImmutableList.of("a", "b");
+
+    final TableDataInsertAllResponse bFailed = new TableDataInsertAllResponse()
+            .setInsertErrors(ImmutableList.of(new InsertErrors().setIndex(1L).setErrors(ImmutableList.of(new ErrorProto()))));
+
+    final TableDataInsertAllResponse allRowsSucceeded = new TableDataInsertAllResponse();
+
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(200).thenReturn(200);
+    when(response.getContent())
+            .thenReturn(toStream(bFailed)).thenReturn(toStream(allRowsSucceeded));
+
+    List<TableRow> deadLetter = Lists.newArrayList();
+    BigQueryIO.Write.RetryPolicy shouldRetry = new BigQueryIO.Write.RetryPolicy() {
+      @Override
+      boolean shouldRetry(BigQueryIO.Write.RetryContext retryContext) {
+        return false;
+      }
+    };
+
+    DatasetServiceImpl dataService =
+            new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), shouldRetry, deadLetter);
+    assertEquals(deadLetter.size(), 1);
+    assertEquals(deadLetter.get(0), new TableRow().set("row", "b"));
+  }
+
 
   /**
    * Tests that {@link DatasetServiceImpl#insertAll} fails gracefully when persistent issues.
@@ -432,7 +468,8 @@ public class BigQueryServicesImplTest {
 
     // Expect it to fail.
     try {
-      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null, null);
+      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null,
+              null);
       fail();
     } catch (IOException e) {
       assertThat(e, instanceOf(IOException.class));
@@ -472,7 +509,8 @@ public class BigQueryServicesImplTest {
         new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
 
     try {
-      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null, null);
+      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null,
+              null);
       fail();
     } catch (RuntimeException e) {
       verify(response, times(1)).getStatusCode();
