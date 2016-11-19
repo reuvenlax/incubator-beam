@@ -183,9 +183,7 @@ interface BigQueryServices extends Serializable {
      *
      * <p>Returns the total bytes count of {@link TableRow TableRows}.
      */
-    long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
-                   BigQueryIO.Write.RetryPolicy shouldRetry,
-                   List<TableRow> deadLetter)
+    long insertAll(TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
         throws IOException, InterruptedException;
   }
 

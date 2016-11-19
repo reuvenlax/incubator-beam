@@ -352,7 +352,7 @@ public class BigQueryServicesImplTest {
 
     DatasetServiceImpl dataService =
         new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
-    dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null, null);
+    dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper());
     verify(response, times(2)).getStatusCode();
     verify(response, times(2)).getContent();
     verify(response, times(2)).getContentType();
@@ -384,46 +384,12 @@ public class BigQueryServicesImplTest {
 
     DatasetServiceImpl dataService =
         new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
-    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), null, null);
+    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper());
     verify(response, times(2)).getStatusCode();
     verify(response, times(2)).getContent();
     verify(response, times(2)).getContentType();
     expectedLogs.verifyInfo("Retrying 1 failed inserts to BigQuery");
   }
-
-  @Test
-  public void testDeadLetter() throws Exception {
-    TableReference ref =
-            new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
-    List<TableRow> rows = ImmutableList.of(
-            new TableRow().set("row", "a"), new TableRow().set("row", "b"));
-    List<String> insertIds = ImmutableList.of("a", "b");
-
-    final TableDataInsertAllResponse bFailed = new TableDataInsertAllResponse()
-            .setInsertErrors(ImmutableList.of(new InsertErrors().setIndex(1L).setErrors(ImmutableList.of(new ErrorProto()))));
-
-    final TableDataInsertAllResponse allRowsSucceeded = new TableDataInsertAllResponse();
-
-    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
-    when(response.getStatusCode()).thenReturn(200).thenReturn(200);
-    when(response.getContent())
-            .thenReturn(toStream(bFailed)).thenReturn(toStream(allRowsSucceeded));
-
-    List<TableRow> deadLetter = Lists.newArrayList();
-    BigQueryIO.Write.RetryPolicy shouldRetry = new BigQueryIO.Write.RetryPolicy() {
-      @Override
-      boolean shouldRetry(BigQueryIO.Write.RetryContext retryContext) {
-        return false;
-      }
-    };
-
-    DatasetServiceImpl dataService =
-            new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
-    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), shouldRetry, deadLetter);
-    assertEquals(deadLetter.size(), 1);
-    assertEquals(deadLetter.get(0), new TableRow().set("row", "b"));
-  }
-
 
   /**
    * Tests that {@link DatasetServiceImpl#insertAll} fails gracefully when persistent issues.
@@ -459,8 +425,7 @@ public class BigQueryServicesImplTest {
 
     // Expect it to fail.
     try {
-      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null,
-              null);
+      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper());
       fail();
     } catch (IOException e) {
       assertThat(e, instanceOf(IOException.class));
@@ -500,8 +465,7 @@ public class BigQueryServicesImplTest {
         new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
 
     try {
-      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper(), null,
-              null);
+      dataService.insertAll(ref, rows, null, TEST_BACKOFF.backoff(), new MockSleeper());
       fail();
     } catch (RuntimeException e) {
       verify(response, times(1)).getStatusCode();

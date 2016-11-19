@@ -190,10 +190,6 @@ public class BigQueryIOTest implements Serializable {
     private JobService jobService;
     private DatasetService datasetService;
 
-    public FakeBigQueryServices() {
-
-    }
-
     public FakeBigQueryServices withJobService(JobService jobService) {
       this.jobService = jobService;
       return this;
@@ -677,9 +673,7 @@ public class BigQueryIOTest implements Serializable {
 
     @Override
     public long insertAll(
-        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList,
-        BigQueryIO.Write.RetryPolicy shouldRetry,
-        List<TableRow> deadLetter)
+        TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
         throws IOException, InterruptedException {
       synchronized (tables) {
         if (rowList.size() != insertIdList.size()) {
@@ -1040,7 +1034,7 @@ public class BigQueryIOTest implements Serializable {
     File tempDir = new File(bqOptions.getTempLocation());
     testNumFiles(tempDir, 0);
   }
-
+*/
   @Test
   @Category(NeedsRunner.class)
   public void testStreamingWrite() throws Exception {
@@ -1053,7 +1047,8 @@ public class BigQueryIOTest implements Serializable {
             .withDatasetService(datasetService);
 
     Pipeline p = TestPipeline.create(bqOptions);
-    p.apply(Create.of(new TableRow().set("name", "a").set("number", 1),
+    p.apply(Create.of(
+        new TableRow().set("name", "a").set("number", 1),
         new TableRow().set("name", "b").set("number", 2),
         new TableRow().set("name", "c").set("number", 3),
         new TableRow().set("name", "d").set("number", 4))
@@ -1077,7 +1072,7 @@ public class BigQueryIOTest implements Serializable {
             new TableRow().set("name", "c").set("number", 3),
             new TableRow().set("name", "d").set("number", 4)));
   }
-*/
+
   // This is a generic window function that allows partitioning data into windows by an arbitrary
   // (non-timestamp) value. Logically, it creates multiple global windows, and the user provides
   // a function that decides which global window a value should go into.

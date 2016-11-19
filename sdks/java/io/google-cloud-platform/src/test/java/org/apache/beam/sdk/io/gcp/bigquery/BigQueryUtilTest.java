@@ -447,7 +447,7 @@ public class BigQueryUtilTest {
     long totalBytes = 0;
     try {
       List<TableRow> deadLetter = Lists.newArrayList();
-      totalBytes = datasetService.insertAll(ref, rows, ids, null, deadLetter);
+      totalBytes = datasetService.insertAll(ref, rows, ids);
       assertTrue(deadLetter.isEmpty());
     } finally {
       verifyInsertAll(5);
