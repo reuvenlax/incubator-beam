@@ -509,10 +509,10 @@ public class BigQueryIOTest implements Serializable {
     }
   }
 
-  // Table information must be static, as each ParDo will get a separate instance of FakeDatasetServices, and they
-  // must all modify the same storage.
-  private static com.google.common.collect.Table<String, String, Map<String, TableContainer>> tables =
-      HashBasedTable.create();
+  // Table information must be static, as each ParDo will get a separate instance of
+  // FakeDatasetServices, and they must all modify the same storage.
+  private static com.google.common.collect.Table<String, String, Map<String, TableContainer>>
+      tables = HashBasedTable.create();
 
   /** A fake dataset service that can be serialized, for use in testReadFromTable. */
   private static class FakeDatasetService implements DatasetService, Serializable {
@@ -580,9 +580,11 @@ public class BigQueryIOTest implements Serializable {
     }
 
     @Override
-    public Table getOrCreateTable(TableReference tableReference, BigQueryIO.Write.WriteDisposition writeDisposition,
-                           BigQueryIO.Write.CreateDisposition createDisposition,
-                           @Nullable TableSchema schema) throws InterruptedException, IOException {
+    public Table getOrCreateTable(TableReference tableReference,
+                                  BigQueryIO.Write.WriteDisposition writeDisposition,
+                                  BigQueryIO.Write.CreateDisposition createDisposition,
+                                  @Nullable TableSchema schema)
+        throws InterruptedException, IOException {
       synchronized (tables) {
         Map<String, TableContainer> dataset =
             checkNotNull(
@@ -639,7 +641,8 @@ public class BigQueryIOTest implements Serializable {
         }
 
         long dataSize = 0;
-        TableContainer tableContainer = getTableContainer(ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
+        TableContainer tableContainer = getTableContainer(
+            ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
         for (int i = 0; i < rowList.size(); ++i) {
           tableContainer.addRow(rowList.get(i), insertIdList.get(i));
           dataSize += rowList.get(i).toString().length();
@@ -999,7 +1002,8 @@ public class BigQueryIOTest implements Serializable {
     bqOptions.setProject("defaultProject");
     bqOptions.setTempLocation(testFolder.newFolder("BigQueryIOTest").getAbsolutePath());
 
-    FakeDatasetService datasetService = new FakeDatasetService().withDataset("project-id", "dataset-id");
+    FakeDatasetService datasetService = new FakeDatasetService()
+        .withDataset("project-id", "dataset-id");
     FakeBigQueryServices fakeBqServices = new FakeBigQueryServices()
             .withDatasetService(datasetService);
 
@@ -1030,10 +1034,14 @@ public class BigQueryIOTest implements Serializable {
             new TableRow().set("name", "d").set("number", 4)));
   }
 
-  // This is a generic window function that allows partitioning data into windows by an arbitrary
-  // (non-timestamp) value. Logically, it creates multiple global windows, and the user provides
-  // a function that decides which global window a value should go into.
+  /**
+   * A generic window function that allows partitioning data into windows by a string value.
+   *
+   * Logically, creates multiple global windows, and the user provides a function that decides which global window a
+   * value should go into.
+   */
   public static class PartitionedGlobalWindows extends
+
       NonMergingWindowFn<TableRow, PartitionedGlobalWindow> {
     private SerializableFunction<Object, String> extractPartition;
 
@@ -1069,6 +1077,9 @@ public class BigQueryIOTest implements Serializable {
     }
   }
 
+  /**
+   * Custom Window object that encodes a String value.
+   */
   public static class PartitionedGlobalWindow extends BoundedWindow {
     String value;
 
@@ -1081,6 +1092,7 @@ public class BigQueryIOTest implements Serializable {
       return GlobalWindow.INSTANCE.maxTimestamp();
     }
 
+    // The following methods are only needed due to BEAM-1022. Once this issue is fixed, we will no longer need these.
     @Override public boolean equals(Object other) {
       if (other instanceof PartitionedGlobalWindow) {
         return value.equals(((PartitionedGlobalWindow) other).value);
@@ -1093,6 +1105,9 @@ public class BigQueryIOTest implements Serializable {
     }
   }
 
+  /**
+   * Coder for @link{PartitionedGlobalWindow}.
+   */
   public static class PartitionedGlobalWindowCoder extends AtomicCoder<PartitionedGlobalWindow> {
     @Override
     public void encode(PartitionedGlobalWindow window, OutputStream outStream, Context context)
@@ -1114,7 +1129,8 @@ public class BigQueryIOTest implements Serializable {
     bqOptions.setProject("defaultProject");
     bqOptions.setTempLocation(testFolder.newFolder("BigQueryIOTest").getAbsolutePath());
 
-    FakeDatasetService datasetService = new FakeDatasetService().withDataset("project-id", "dataset-id");
+    FakeDatasetService datasetService = new FakeDatasetService()
+        .withDataset("project-id", "dataset-id");
     FakeBigQueryServices fakeBqServices = new FakeBigQueryServices()
         .withDatasetService(datasetService);
 
@@ -1123,14 +1139,15 @@ public class BigQueryIOTest implements Serializable {
       inserts.add(new TableRow().set("name", "number" + i).set("number", i));
     }
 
-    // Create a windowing strategy that puts the input into five different windows depending on record value.
+    // Create a windowing strategy that puts the input into five different windows depending on
+    // record value.
     WindowFn<TableRow, PartitionedGlobalWindow> window = new PartitionedGlobalWindows(
         new SerializableFunction<Object, String>() {
           @Override
           public String apply(Object value) {
             try {
               if (value instanceof TableRow) {
-                int intValue = (Integer)((TableRow)value).get("number") % 5;
+                int intValue = (Integer) ((TableRow) value).get("number") % 5;
                 return Integer.toString(intValue);
               }
             } catch (NumberFormatException e) {
@@ -1141,11 +1158,12 @@ public class BigQueryIOTest implements Serializable {
         }
     );
 
-    SerializableFunction<BoundedWindow, String> tableFunction = new SerializableFunction<BoundedWindow, String>() {
-      @Override
-      public String apply(BoundedWindow input) {
-        return "project-id:dataset-id.table-id-" + ((PartitionedGlobalWindow)input).value;
-      }
+    SerializableFunction<BoundedWindow, String> tableFunction =
+        new SerializableFunction<BoundedWindow, String>() {
+          @Override
+          public String apply(BoundedWindow input) {
+            return "project-id:dataset-id.table-id-" + ((PartitionedGlobalWindow) input).value;
+          }
     };
 
     Pipeline p = TestPipeline.create(bqOptions);
