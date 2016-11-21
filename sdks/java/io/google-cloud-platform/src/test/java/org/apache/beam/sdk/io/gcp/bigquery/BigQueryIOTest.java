@@ -24,9 +24,7 @@ import static org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.fromJsonString;
 import static org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.toJsonString;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
 import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
-import static org.hamcrest.Matchers.hasItems;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
@@ -61,7 +59,6 @@ import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Table.Cell;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileFilter;
@@ -72,6 +69,7 @@ import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -86,7 +84,6 @@ import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.avro.Schema;
 import org.apache.avro.file.DataFileWriter;
-import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
@@ -116,7 +113,6 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteTables;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.DatasetService;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.JobService;
 import org.apache.beam.sdk.options.BigQueryOptions;
-import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.StreamingOptions;
@@ -153,7 +149,6 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.hamcrest.CoreMatchers;
-import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.joda.time.Instant;
 import org.junit.Assert;
@@ -499,7 +494,7 @@ public class BigQueryIOTest implements Serializable {
       this.ids = new ArrayList<>();
     }
 
-    TableContainer addRow(TableRow row, String id) {
+     TableContainer addRow(TableRow row, String id) {
       rows.add(row);
       ids.add(id);
       return this;
@@ -509,7 +504,7 @@ public class BigQueryIOTest implements Serializable {
       return table;
     }
 
-    List<TableRow> getRows() {
+     List<TableRow> getRows() {
       return rows;
     }
   }
@@ -521,7 +516,7 @@ public class BigQueryIOTest implements Serializable {
 
   /** A fake dataset service that can be serialized, for use in testReadFromTable. */
   private static class FakeDatasetService implements DatasetService, Serializable {
-    
+
     public FakeDatasetService withDataset(String projectId, String datasetId) {
       synchronized (tables) {
         Map<String, TableContainer> dataset = tables.get(projectId, datasetId);
@@ -552,7 +547,7 @@ public class BigQueryIOTest implements Serializable {
       return getTableContainer(projectId, datasetId, tableId).getTable();
     }
 
-    public List<TableRow> getAllRowsString(String projectId, String datasetId, String tableId)
+    public List<TableRow> getAllRows(String projectId, String datasetId, String tableId)
         throws InterruptedException, IOException {
       synchronized (tables) {
         return getTableContainer(projectId, datasetId, tableId).getRows();
@@ -714,7 +709,7 @@ public class BigQueryIOTest implements Serializable {
     tables = HashBasedTable.create();
   }
 
-  /*@Test
+  @Test
   public void testBuildTableBasedSource() {
     BigQueryIO.Read.Bound bound = BigQueryIO.Read.from("foo.com:project:somedataset.sometable");
     checkReadTableObject(bound, "foo.com:project", "somedataset", "sometable");
@@ -996,7 +991,7 @@ public class BigQueryIOTest implements Serializable {
     File tempDir = new File(bqOptions.getTempLocation());
     testNumFiles(tempDir, 0);
   }
-*/
+
   @Test
   @Category(NeedsRunner.class)
   public void testStreamingWrite() throws Exception {
@@ -1027,7 +1022,7 @@ public class BigQueryIOTest implements Serializable {
     p.run();
 
 
-    assertThat(datasetService.getAllRowsString("project-id", "dataset-id", "table-id"),
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id"),
         containsInAnyOrder(
             new TableRow().set("name", "a").set("number", 1),
             new TableRow().set("name", "b").set("number", 2),
@@ -1038,7 +1033,7 @@ public class BigQueryIOTest implements Serializable {
   // This is a generic window function that allows partitioning data into windows by an arbitrary
   // (non-timestamp) value. Logically, it creates multiple global windows, and the user provides
   // a function that decides which global window a value should go into.
-  private static class PartitionedGlobalWindows extends
+  public static class PartitionedGlobalWindows extends
       NonMergingWindowFn<TableRow, PartitionedGlobalWindow> {
     private SerializableFunction<Object, String> extractPartition;
 
@@ -1054,7 +1049,7 @@ public class BigQueryIOTest implements Serializable {
 
     @Override
     public boolean isCompatible(WindowFn<?, ?> o) {
-      return false;
+      return o instanceof PartitionedGlobalWindows;
     }
 
     @Override
@@ -1074,7 +1069,7 @@ public class BigQueryIOTest implements Serializable {
     }
   }
 
-  private static class PartitionedGlobalWindow extends BoundedWindow {
+  public static class PartitionedGlobalWindow extends BoundedWindow {
     String value;
 
     public PartitionedGlobalWindow(String value) {
@@ -1085,9 +1080,20 @@ public class BigQueryIOTest implements Serializable {
     public Instant maxTimestamp() {
       return GlobalWindow.INSTANCE.maxTimestamp();
     }
+
+    @Override public boolean equals(Object other) {
+      if (other instanceof PartitionedGlobalWindow) {
+        return value.equals(((PartitionedGlobalWindow) other).value);
+      }
+      return false;
+    }
+
+    @Override public int hashCode() {
+      return value.hashCode();
+    }
   }
 
-  private static class PartitionedGlobalWindowCoder extends AtomicCoder<PartitionedGlobalWindow> {
+  public static class PartitionedGlobalWindowCoder extends AtomicCoder<PartitionedGlobalWindow> {
     @Override
     public void encode(PartitionedGlobalWindow window, OutputStream outStream, Context context)
         throws IOException, CoderException {
@@ -1146,7 +1152,7 @@ public class BigQueryIOTest implements Serializable {
     p.apply(Create.of(inserts)
         .withCoder(TableRowJsonCoder.of()))
         .setIsBoundedInternal(PCollection.IsBounded.UNBOUNDED)
-        .apply(Window.into(window))
+        .apply(Window.<TableRow>into(window))
         .apply(BigQueryIO.Write
             .to(tableFunction)
             .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
@@ -1159,14 +1165,30 @@ public class BigQueryIOTest implements Serializable {
     p.run();
 
 
-    assertThat(datasetService.getAllRowsString("project-id", "dataset-id", "table-id0"),
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-0"),
         containsInAnyOrder(
-            new TableRow().set("name", "a").set("number", 0),
-            new TableRow().set("name", "b").set("number", 5)));
+            new TableRow().set("name", "number0").set("number", 0),
+            new TableRow().set("name", "number5").set("number", 5)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-1"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number1").set("number", 1),
+            new TableRow().set("name", "number6").set("number", 6)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-2"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number2").set("number", 2),
+            new TableRow().set("name", "number7").set("number", 7)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-3"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number3").set("number", 3),
+            new TableRow().set("name", "number8").set("number", 8)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-4"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number4").set("number", 4),
+            new TableRow().set("name", "number9").set("number", 9)));
   }
 
 
-  /*@Test
+  @Test
   @Category(NeedsRunner.class)
   public void testWriteUnknown() throws Exception {
     BigQueryOptions bqOptions = TestPipeline.testingPipelineOptions().as(BigQueryOptions.class);
@@ -1265,14 +1287,14 @@ public class BigQueryIOTest implements Serializable {
   @Category(RunnableOnService.class)
   @Ignore("[BEAM-436] DirectRunner RunnableOnService tempLocation configuration insufficient")
   public void testBatchWritePrimitiveDisplayData() throws IOException, InterruptedException {
-    testWritePrimitiveDisplayData(*//* streaming: *//* false);
+    testWritePrimitiveDisplayData(/* streaming: */ false);
   }
 
   @Test
   @Category(RunnableOnService.class)
   @Ignore("[BEAM-436] DirectRunner RunnableOnService tempLocation configuration insufficient")
   public void testStreamingWritePrimitiveDisplayData() throws IOException, InterruptedException {
-    testWritePrimitiveDisplayData(*//* streaming: *//* true);
+    testWritePrimitiveDisplayData(/* streaming: */ true);
   }
 
   private void testWritePrimitiveDisplayData(boolean streaming) throws IOException,
@@ -1701,7 +1723,7 @@ public class BigQueryIOTest implements Serializable {
     String extractDestinationDir = "mock://tempLocation";
     TableReference destinationTable = BigQueryIO.parseTableSpec("project:data_set.table_name");
     BoundedSource<TableRow> bqSource = BigQueryQuerySource.create(
-        jobIdToken, "query", destinationTable, true *//* flattenResults *//*, true *//* useLegacySql *//*,
+        jobIdToken, "query", destinationTable, true /* flattenResults */, true /* useLegacySql */,
         extractDestinationDir, fakeBqServices);
 
     List<TableRow> expected = ImmutableList.of(
@@ -1792,7 +1814,7 @@ public class BigQueryIOTest implements Serializable {
     String extractDestinationDir = "mock://tempLocation";
     TableReference destinationTable = BigQueryIO.parseTableSpec("project:data_set.table_name");
     BoundedSource<TableRow> bqSource = BigQueryQuerySource.create(
-        jobIdToken, "query", destinationTable, true *//* flattenResults *//*, true *//* useLegacySql *//*,
+        jobIdToken, "query", destinationTable, true /* flattenResults */, true /* useLegacySql */,
         extractDestinationDir, fakeBqServices);
 
     List<TableRow> expected = ImmutableList.of(
@@ -2210,7 +2232,7 @@ public class BigQueryIOTest implements Serializable {
         String newDest = destination.replace("*", "000000000000");
         Schema schema = schemaGenerator.apply(null);
         try (WritableByteChannel channel = IOChannelUtils.create(newDest, MimeTypes.BINARY);
-            DataFileWriter<GenericRecord> tableRowWriter =
+             DataFileWriter<GenericRecord> tableRowWriter =
                 new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
                     .create(schema, Channels.newOutputStream(channel))) {
           for (Map<String, Object> record : records) {
@@ -2227,5 +2249,5 @@ public class BigQueryIOTest implements Serializable {
       }
       return null;
     }
-  }*/
+  }
 }
