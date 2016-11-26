@@ -25,7 +25,6 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.services.bigquery.model.ErrorProto;
-import com.google.api.services.bigquery.Bigquery;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
 import com.google.api.services.bigquery.model.JobConfigurationLoad;
@@ -45,6 +44,7 @@ import com.google.common.base.Function;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.io.CountingOutputStream;
 import java.io.IOException;
@@ -91,6 +91,7 @@ import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.DatasetService;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.JobService;
 import org.apache.beam.sdk.options.BigQueryOptions;
+import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.GcpOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.ValueProvider;
@@ -1546,9 +1547,46 @@ public class BigQueryIO {
       TableDataInsertAllResponse.InsertErrors errors;
     }
 
-    static public abstract class RetryPolicy {
-      abstract boolean shouldRetry(RetryContext retryContext);
+    static public abstract class RetryPolicy implements SerializableFunction<RetryContext, Boolean> {
+      @Override
+      public abstract Boolean apply(RetryContext retryContext);
     }
+
+    static class DontRetry extends RetryPolicy {
+      @Override
+      public Boolean apply(RetryContext retryContext) {
+        return false;
+      }
+    }
+
+    static class DontRetryPersistentErrors extends RetryPolicy {
+      static Set<String> persistentErrors = ImmutableSet.of("invalid", "invalidQuery", "notImplemented");
+      @Override
+      public Boolean apply(RetryContext retryContext) {
+        if (retryContext.errors.getErrors() != null) {
+          for (ErrorProto error : retryContext.errors.getErrors()) {
+            if (error.getReason() != null && persistentErrors.contains(error.getReason())) {
+              return false;
+            }
+          }
+        }
+        return true;
+      }
+    }
+
+    /**
+     * Default retry policy for failed inserts. Retry all errors except for known persistent
+     * errors.
+     */
+    public static RetryPolicy DEFAULT_RETRY_POLICY = new DontRetryPersistentErrors();
+
+    /**
+     * Policy which does not retry any insert failures. Use with care, as many failures are
+     * ephemeral, and go away upon retry.
+     */
+    public static RetryPolicy DONT_RETRY = new DontRetry();
+
+
 
     /**
      * Creates a write transformation for the given table specification.
@@ -1632,8 +1670,8 @@ public class BigQueryIO {
       return new Bound<PDone>().withoutValidation();
     }
 
-    public static Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
-      return new Bound<PCollection<TableRow>>().withBadRowPolicy(shouldRetry);
+    public static Bound<PCollection<TableRow>> withFailedInsertPolicy(RetryPolicy shouldRetry) {
+      return new Bound<PCollection<TableRow>>().withFailedInsertPolicy(shouldRetry);
     }
 
     /**
@@ -1856,7 +1894,7 @@ public class BigQueryIO {
       }
 
       @VisibleForTesting
-      Bound<PCollection<TableRow>> withBadRowPolicy(RetryPolicy shouldRetry) {
+      Bound<PCollection<TableRow>> withFailedInsertPolicy(RetryPolicy shouldRetry) {
         return new Bound<>(name, jsonTableRef, tableRefFunction, jsonSchema,
                 createDisposition, writeDisposition, validate, bigQueryServices, shouldRetry);
       }
@@ -2619,12 +2657,13 @@ public class BigQueryIO {
 
     /** The list of tables created so far, so we don't try the creation
         each time. */
-    private static Set<String> createdTables =
+    static Set<String> createdTables =
         Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
     /** Tracks bytes written, exposed as "ByteCount" Counter. */
     private Aggregator<Long, Long> byteCountAggregator =
         createAggregator("ByteCount", new Sum.SumLongFn());
+
 
     /** Constructor. */
     StreamingWriteFn(ValueProvider<TableSchema> schema, BigQueryServices bqServices,
@@ -2669,7 +2708,6 @@ public class BigQueryIO {
 
       for (Map.Entry<String, List<TableRow>> entry : tableRows.entrySet()) {
         TableReference tableReference = getOrCreateTable(options, entry.getKey());
-        System.out.print("flushing " + this);
         List<TableRow> deadLetter = flushRows(tableReference, entry.getValue(),
             uniqueIdsForTableRows.get(entry.getKey()), options);
         for (TableRow failed : deadLetter) {

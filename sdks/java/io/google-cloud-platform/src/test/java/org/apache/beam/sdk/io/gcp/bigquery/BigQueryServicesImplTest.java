@@ -419,16 +419,11 @@ public class BigQueryServicesImplTest {
             .thenReturn(toStream(bFailed)).thenReturn(toStream(allRowsSucceeded));
 
     List<TableRow> deadLetter = Lists.newArrayList();
-    BigQueryIO.Write.RetryPolicy shouldRetry = new BigQueryIO.Write.RetryPolicy() {
-      @Override
-      boolean shouldRetry(BigQueryIO.Write.RetryContext retryContext) {
-        return false;
-      }
-    };
 
     DatasetServiceImpl dataService =
             new DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
-    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(), shouldRetry, deadLetter);
+    dataService.insertAll(ref, rows, insertIds, TEST_BACKOFF.backoff(), new MockSleeper(),
+        BigQueryIO.Write.DONT_RETRY, deadLetter);
     assertEquals(deadLetter.size(), 1);
     assertEquals(deadLetter.get(0), new TableRow().set("row", "b"));
   }

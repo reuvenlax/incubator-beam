@@ -782,7 +782,7 @@ class BigQueryServicesImpl implements BigQueryServices {
                   throw new IOException("Insert failed: " + allErrors);
                 }
 
-                boolean skip_retry = shouldRetry != null && !shouldRetry.shouldRetry(
+                boolean skip_retry = shouldRetry != null && !shouldRetry.apply(
                         new BigQueryIO.Write.RetryContext(error));
                 int errorIndex = error.getIndex().intValue() + strideIndices.get(i);
                 if (skip_retry) {
