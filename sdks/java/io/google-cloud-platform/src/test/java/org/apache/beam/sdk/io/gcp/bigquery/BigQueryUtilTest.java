@@ -370,7 +370,7 @@ public class BigQueryUtilTest {
 
     BigQueryServicesImpl.DatasetServiceImpl services =
             new BigQueryServicesImpl.DatasetServiceImpl(mockClient, options);
-    services.getTable(ref);
+    services.getTable(ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
 
     verifyTableGet();
   }
@@ -388,7 +388,7 @@ public class BigQueryUtilTest {
     BigQueryServicesImpl.DatasetServiceImpl services =
             new BigQueryServicesImpl.DatasetServiceImpl(mockClient, options);
 
-    services.getTable(ref);
+    services.getTable(ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
 
     verifyTableGet();
     verifyTabledataList();
@@ -409,7 +409,7 @@ public class BigQueryUtilTest {
     BigQueryServicesImpl.DatasetServiceImpl services =
             new BigQueryServicesImpl.DatasetServiceImpl(mockClient, options);
     try {
-      services.getTable(ref);
+      services.getTable(ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
     } finally {
       verifyTableGet();
       verifyTabledataList();

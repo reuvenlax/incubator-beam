@@ -544,7 +544,17 @@ public class BigQueryIOTest implements Serializable {
     @Override
     public Table getTable(String projectId, String datasetId, String tableId)
         throws InterruptedException, IOException {
-      return getTableContainer(projectId, datasetId, tableId).getTable();
+      synchronized (tables) {
+        Map<String, TableContainer> dataset =
+            checkNotNull(
+                tables.get(projectId, datasetId),
+                "Tried to get a dataset %s:%s from %s, but no such dataset was set",
+                projectId,
+                datasetId,
+                FakeDatasetService.class.getSimpleName());
+        TableContainer tableContainer = dataset.get(tableId);
+        return tableContainer == null ? null : tableContainer.getTable();
+      }
     }
 
     public List<TableRow> getAllRows(String projectId, String datasetId, String tableId)
@@ -580,25 +590,9 @@ public class BigQueryIOTest implements Serializable {
     }
 
     @Override
-    public Table getTable(TableReference tableReference)
-        throws InterruptedException, IOException {
-      synchronized (tables) {
-        Map<String, TableContainer> dataset =
-            checkNotNull(
-                tables.get(tableReference.getProjectId(), tableReference.getDatasetId()),
-                "Tried to get a dataset %s:%s from %s, but no such table was set",
-                tableReference.getProjectId(),
-                tableReference.getDatasetId(),
-                tableReference.getTableId(),
-                FakeDatasetService.class.getSimpleName());
-        TableContainer tableContainer = dataset.get(tableReference.getTableId());
-        return tableContainer == null ? null : tableContainer.getTable();
-      }
-    }
-
-    @Override
-    public void createTable(TableReference tableReference, @Nullable TableSchema schema)
-        throws IOException {
+    public void createTable(Table table) throws IOException {
+      TableReference tableReference = table.getTableReference();
+      TableSchema schema = table.getSchema();
       synchronized (tables) {
         Map<String, TableContainer> dataset =
             checkNotNull(

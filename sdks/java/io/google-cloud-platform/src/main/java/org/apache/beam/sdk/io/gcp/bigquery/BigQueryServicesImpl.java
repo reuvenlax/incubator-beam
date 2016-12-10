@@ -397,35 +397,35 @@ class BigQueryServicesImpl implements BigQueryServices {
       BackOff backoff =
           FluentBackoff.DEFAULT
               .withMaxRetries(MAX_RPC_RETRIES).withInitialBackoff(INITIAL_RPC_BACKOFF).backoff();
-      return executeWithRetries(
-          client.tables().get(projectId, datasetId, tableId),
-          String.format(
-              "Unable to get table: %s, aborting after %d retries.",
-              tableId, MAX_RPC_RETRIES),
+      return getTable(
+          new TableReference().setProjectId(projectId).setDatasetId(datasetId).setTableId(tableId),
           Sleeper.DEFAULT,
           backoff);
     }
 
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public Table getTable(TableReference tableRef) throws InterruptedException, IOException {
-      // Check if table already exists.
-      Bigquery.Tables.Get get = client.tables()
-          .get(tableRef.getProjectId(), tableRef.getDatasetId(), tableRef.getTableId());
-      Table table = null;
-      try {
-        table = get.execute();
-      } catch (IOException e) {
-        ApiErrorExtractor errorExtractor = new ApiErrorExtractor();
-        if (!errorExtractor.itemNotFound(e)) {
-          // Rethrow.
-          throw e;
+    @VisibleForTesting
+    Table getTable(TableReference tableRef, Sleeper sleeper, BackOff backoff)
+        throws IOException, InterruptedException {
+      Exception lastException;
+      do {
+        try {
+          return client.tables()
+              .get(tableRef.getProjectId(), tableRef.getDatasetId(), tableRef.getTableId())
+              .execute();
+        } catch (IOException e) {
+          if (errorExtractor.itemNotFound(e)) {
+            return null;
+          }
+          // ignore and retry
+          LOG.warn("Ignore the error and retry getting the table.", e);
+          lastException = e;
         }
-      }
-
-      return table;
+      } while (nextBackOff(sleeper, backoff));
+      throw new IOException(
+          String.format(
+              "Unable to create table: %s, aborting after %d retries.",
+              tableRef, MAX_RPC_RETRIES),
+          lastException);
     }
 
     /**
@@ -437,67 +437,77 @@ class BigQueryServicesImpl implements BigQueryServices {
         (int) TimeUnit.MINUTES.toMillis(5);
 
     /**
+     * {@inheritDoc}
+     *
      * Tries to create the BigQuery table.
      * If a table with the same name already exists in the dataset, the table
      * creation fails.  In such a case,
      * the existing table doesn't necessarily have the same schema as specified
      * by the parameter.
      *
-     * @param schema Schema of the new BigQuery table.
      * @throws IOException if other error than already existing table occurs.
      */
-    @Nullable
     @Override
-    public void createTable(TableReference ref, TableSchema schema) throws IOException {
-      LOG.info("Trying to create BigQuery table: {}", BigQueryIO.toTableSpec(ref));
+    public void createTable(Table table) throws IOException, InterruptedException {
+      LOG.info("Trying to create BigQuery table: {}",
+          BigQueryIO.toTableSpec(table.getTableReference()));
       BackOff backoff =
               new ExponentialBackOff.Builder()
                       .setMaxElapsedTimeMillis(RETRY_CREATE_TABLE_DURATION_MILLIS)
                       .build();
 
-      Table table = new Table().setTableReference(ref).setSchema(schema);
-      tryCreateTable(table, ref.getProjectId(), ref.getDatasetId(), backoff,
-          Sleeper.DEFAULT);
+      tryCreateTable(table, backoff, Sleeper.DEFAULT);
     }
 
     @VisibleForTesting
-    @Nullable
-    Table tryCreateTable(
-            Table table, String projectId, String datasetId, BackOff backoff, Sleeper sleeper)
-            throws IOException {
-      boolean retry = false;
-      while (true) {
+    void tryCreateTable(Table table, BackOff backoff, Sleeper sleeper)
+        throws IOException, InterruptedException {
+      Exception lastException;
+      int retryCount = 0;
+      boolean logRetryMessage = true;
+      do {
         try {
-          return client.tables().insert(projectId, datasetId, table).execute();
+          client.tables().insert(
+              table.getTableReference().getProjectId(),
+              table.getTableReference().getDatasetId(),
+              table).execute();
+          return; // SUCCEEDED
         } catch (IOException e) {
-          ApiErrorExtractor extractor = new ApiErrorExtractor();
-          if (extractor.itemAlreadyExists(e)) {
-            // The table already exists, nothing to return.
-            return null;
-          } else if (extractor.rateLimited(e)) {
-            // The request failed because we hit a temporary quota. Back off and try again.
-            try {
-              if (BackOffUtils.next(sleeper, backoff)) {
-                if (!retry) {
-                  LOG.info(
-                      "Quota limit reached when creating table {}:{}.{}, retrying up to {} minutes",
-                      projectId,
-                      datasetId,
-                      table.getTableReference().getTableId(),
-                      TimeUnit.MILLISECONDS.toSeconds(RETRY_CREATE_TABLE_DURATION_MILLIS) / 60.0);
-                  retry = true;
-                }
-                continue;
-              }
-            } catch (InterruptedException e1) {
-              // Restore interrupted state and throw the last failure.
-              Thread.currentThread().interrupt();
-              throw e;
+          if (errorExtractor.itemAlreadyExists(e)) {
+            // Table already exists, verify the schema is the same.
+            Table existingTable = getTable(
+                table.getTableReference().getProjectId(),
+                table.getTableReference().getDatasetId(),
+                table.getTableReference().getTableId());
+
+            if (!existingTable.getSchema().equals(table.getSchema())) {
+              throw new IOException(String.format(
+                  "Existing table's schema [%s] is different from the request [%s].",
+                  existingTable.getSchema(), table.getSchema()));
             }
+            return; // SUCCEEDED
+          } else if (errorExtractor.accessDenied(e)) {
+            // Do not retry on accessDenied.
+            throw e;
           }
-          throw e;
+          // Retry for all other exceptions.
+          if (logRetryMessage) {
+            LOG.info(
+                "Encountered [{}] when creating table {}, retrying up to {} minutes",
+                errorExtractor.toUserPresentableMessage(e),
+                table.getTableReference(),
+                TimeUnit.MILLISECONDS.toMinutes(RETRY_CREATE_TABLE_DURATION_MILLIS));
+          }
+          logRetryMessage = false;
+          lastException = e;
+          ++retryCount;
         }
-      }
+      } while (BackOffUtils.next(sleeper, backoff));
+      throw new IOException(
+          String.format(
+              "Unable to create table: %s, aborting after %d retries.",
+              table, retryCount),
+          lastException);
     }
 
     /**
