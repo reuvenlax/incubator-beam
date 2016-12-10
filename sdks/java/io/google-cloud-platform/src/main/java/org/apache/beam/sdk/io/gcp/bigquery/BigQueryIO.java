@@ -24,7 +24,6 @@ import static com.google.common.base.Preconditions.checkState;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.api.client.json.JsonFactory;
-import com.google.api.services.bigquery.Bigquery;
 import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationExtract;
 import com.google.api.services.bigquery.model.JobConfigurationLoad;
@@ -33,6 +32,7 @@ import com.google.api.services.bigquery.model.JobConfigurationTableCopy;
 import com.google.api.services.bigquery.model.JobReference;
 import com.google.api.services.bigquery.model.JobStatistics;
 import com.google.api.services.bigquery.model.JobStatus;
+import com.google.api.services.bigquery.model.Table;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
@@ -1604,7 +1604,7 @@ public class BigQueryIO {
       public Bound toTableReference(
           SerializableFunction<BoundedWindow, TableReference> tableRefFunction) {
         return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema, createDisposition,
-            writeDisposition, validate, bigQueryServices);
+           writeDisposition, validate, bigQueryServices);
       }
 
       /**
@@ -1624,8 +1624,8 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       public Bound withCreateDisposition(CreateDisposition createDisposition) {
-        return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema, createDisposition,
-            writeDisposition, validate, bigQueryServices);
+        return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema,
+                createDisposition, writeDisposition, validate, bigQueryServices);
       }
 
       /**
@@ -1634,8 +1634,8 @@ public class BigQueryIO {
        * <p>Does not modify this object.
        */
       public Bound withWriteDisposition(WriteDisposition writeDisposition) {
-        return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema, createDisposition,
-            writeDisposition, validate, bigQueryServices);
+        return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema,
+                createDisposition, writeDisposition, validate, bigQueryServices);
       }
 
       /**
@@ -1645,13 +1645,13 @@ public class BigQueryIO {
        */
       public Bound withoutValidation() {
         return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema, createDisposition,
-            writeDisposition, false, bigQueryServices);
+           writeDisposition, false, bigQueryServices);
       }
 
       @VisibleForTesting
       Bound withTestServices(BigQueryServices testServices) {
         return new Bound(name, jsonTableRef, tableRefFunction, jsonSchema, createDisposition,
-            writeDisposition, validate, testServices);
+           writeDisposition, validate, testServices);
       }
 
       private static void verifyTableEmpty(
@@ -1840,8 +1840,8 @@ public class BigQueryIO {
         return PDone.in(input.getPipeline());
       }
 
-      private class WriteBundles extends DoFn<TableRow, KV<String, Long>> {
-        private TableRowWriter writer = null;
+      private static class WriteBundles extends DoFn<TableRow, KV<String, Long>> {
+        private transient TableRowWriter writer = null;
         private final String tempFilePrefix;
 
         WriteBundles(String tempFilePrefix) {
@@ -2359,6 +2359,13 @@ public class BigQueryIO {
     }
   }
 
+  /**
+   * Clear the cached map of created tables. Used for testing.
+   */
+  @VisibleForTesting
+   static void clearCreatedTables() {
+    StreamingWriteFn.clearCreatedTables();
+  }
   /////////////////////////////////////////////////////////////////////////////
 
   /**
@@ -2391,6 +2398,15 @@ public class BigQueryIO {
     StreamingWriteFn(TableSchema schema, BigQueryServices bqServices) {
       this.jsonTableSchema = toJsonString(schema);
       this.bqServices = checkNotNull(bqServices, "bqServices");
+    }
+
+    /**
+     * Clear the cached map of created tables. Used for testing.
+     */
+    private static void clearCreatedTables() {
+      synchronized (createdTables) {
+        createdTables.clear();
+      }
     }
 
     /** Prepares a target BigQuery table. */
@@ -2434,7 +2450,7 @@ public class BigQueryIO {
     }
 
     public TableReference getOrCreateTable(BigQueryOptions options, String tableSpec)
-        throws IOException {
+        throws InterruptedException, IOException {
       TableReference tableReference = parseTableSpec(tableSpec);
       if (!createdTables.contains(tableSpec)) {
         synchronized (createdTables) {
@@ -2442,11 +2458,16 @@ public class BigQueryIO {
           // check again. This check isn't needed for correctness, but we add it to prevent
           // every thread from attempting a create and overwhelming our BigQuery quota.
           if (!createdTables.contains(tableSpec)) {
-            TableSchema tableSchema = JSON_FACTORY.fromString(jsonTableSchema, TableSchema.class);
-            Bigquery client = Transport.newBigQueryClient(options).build();
-            BigQueryTableInserter inserter = new BigQueryTableInserter(client, options);
-            inserter.getOrCreateTable(tableReference, Write.WriteDisposition.WRITE_APPEND,
-                Write.CreateDisposition.CREATE_IF_NEEDED, tableSchema);
+            DatasetService datasetService = bqServices.getDatasetService(options);
+            Table table = datasetService.getTable(
+                tableReference.getProjectId(),
+                tableReference.getDatasetId(),
+                tableReference.getTableId());
+            if (table == null) {
+              TableSchema tableSchema = JSON_FACTORY.fromString(jsonTableSchema, TableSchema.class);
+              bqServices.getDatasetService(options).createTable(
+                  new Table().setTableReference(tableReference).setSchema(tableSchema));
+            }
             createdTables.add(tableSpec);
           }
         }

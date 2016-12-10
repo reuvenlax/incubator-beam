@@ -23,6 +23,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.fromJsonString;
 import static org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.toJsonString;
 import static org.apache.beam.sdk.transforms.display.DisplayDataMatchers.hasDisplayItem;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -58,18 +59,20 @@ import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Table.Cell;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -85,6 +88,8 @@ import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.AtomicCoder;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
@@ -129,6 +134,9 @@ import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.DisplayDataEvaluator;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
+import org.apache.beam.sdk.transforms.windowing.NonMergingWindowFn;
+import org.apache.beam.sdk.transforms.windowing.Window;
+import org.apache.beam.sdk.transforms.windowing.WindowFn;
 import org.apache.beam.sdk.util.CoderUtils;
 import org.apache.beam.sdk.util.IOChannelFactory;
 import org.apache.beam.sdk.util.IOChannelUtils;
@@ -142,6 +150,7 @@ import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.Matchers;
+import org.joda.time.Instant;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Ignore;
@@ -474,45 +483,131 @@ public class BigQueryIOTest implements Serializable {
     }
   }
 
+  private static class TableContainer {
+    Table table;
+    List<TableRow> rows;
+    List<String> ids;
+
+    TableContainer(Table table) {
+      this.table = table;
+      this.rows = new ArrayList<>();
+      this.ids = new ArrayList<>();
+    }
+
+     TableContainer addRow(TableRow row, String id) {
+      rows.add(row);
+      ids.add(id);
+      return this;
+    }
+
+    Table getTable() {
+      return table;
+    }
+
+     List<TableRow> getRows() {
+      return rows;
+    }
+  }
+
+  // Table information must be static, as each ParDo will get a separate instance of
+  // FakeDatasetServices, and they must all modify the same storage.
+  private static com.google.common.collect.Table<String, String, Map<String, TableContainer>>
+      tables = HashBasedTable.create();
+
   /** A fake dataset service that can be serialized, for use in testReadFromTable. */
   private static class FakeDatasetService implements DatasetService, Serializable {
-    private com.google.common.collect.Table<String, String, Map<String, Table>> tables =
-        HashBasedTable.create();
+
+    public FakeDatasetService withDataset(String projectId, String datasetId) {
+      synchronized (tables) {
+        Map<String, TableContainer> dataset = tables.get(projectId, datasetId);
+        if (dataset == null) {
+          dataset = new HashMap<>();
+          tables.put(projectId, datasetId, dataset);
+        }
+      }
+      return this;
+    }
 
     public FakeDatasetService withTable(
         String projectId, String datasetId, String tableId, Table table) throws IOException {
-      Map<String, Table> dataset = tables.get(projectId, datasetId);
-      if (dataset == null) {
-        dataset = new HashMap<>();
-        tables.put(projectId, datasetId, dataset);
+      synchronized (tables) {
+        Map<String, TableContainer> dataset = tables.get(projectId, datasetId);
+        if (dataset == null) {
+          dataset = new HashMap<>();
+          tables.put(projectId, datasetId, dataset);
+        }
+        dataset.put(tableId, new TableContainer(table));
       }
-      dataset.put(tableId, table);
       return this;
     }
 
     @Override
     public Table getTable(String projectId, String datasetId, String tableId)
         throws InterruptedException, IOException {
-      Map<String, Table> dataset =
-          checkNotNull(
-              tables.get(projectId, datasetId),
-              "Tried to get a table %s:%s.%s from %s, but no such table was set",
-              projectId,
-              datasetId,
-              tableId,
-              FakeDatasetService.class.getSimpleName());
-      return checkNotNull(dataset.get(tableId),
-          "Tried to get a table %s:%s.%s from %s, but no such table was set",
-          projectId,
-          datasetId,
-          tableId,
-          FakeDatasetService.class.getSimpleName());
+      synchronized (tables) {
+        Map<String, TableContainer> dataset =
+            checkNotNull(
+                tables.get(projectId, datasetId),
+                "Tried to get a dataset %s:%s from %s, but no such dataset was set",
+                projectId,
+                datasetId,
+                FakeDatasetService.class.getSimpleName());
+        TableContainer tableContainer = dataset.get(tableId);
+        return tableContainer == null ? null : tableContainer.getTable();
+      }
+    }
+
+    public List<TableRow> getAllRows(String projectId, String datasetId, String tableId)
+        throws InterruptedException, IOException {
+      synchronized (tables) {
+        return getTableContainer(projectId, datasetId, tableId).getRows();
+      }
+    }
+
+    private TableContainer getTableContainer(String projectId, String datasetId, String tableId)
+            throws InterruptedException, IOException {
+       synchronized (tables) {
+         Map<String, TableContainer> dataset =
+             checkNotNull(
+                 tables.get(projectId, datasetId),
+                 "Tried to get a dataset %s:%s from %s, but no such dataset was set",
+                 projectId,
+                 datasetId,
+                 FakeDatasetService.class.getSimpleName());
+         return checkNotNull(dataset.get(tableId),
+             "Tried to get a table %s:%s.%s from %s, but no such table was set",
+             projectId,
+             datasetId,
+             tableId,
+             FakeDatasetService.class.getSimpleName());
+       }
     }
 
     @Override
     public void deleteTable(String projectId, String datasetId, String tableId)
         throws IOException, InterruptedException {
       throw new UnsupportedOperationException("Unsupported");
+    }
+
+    @Override
+    public void createTable(Table table) throws IOException {
+      TableReference tableReference = table.getTableReference();
+      TableSchema schema = table.getSchema();
+      synchronized (tables) {
+        Map<String, TableContainer> dataset =
+            checkNotNull(
+                tables.get(tableReference.getProjectId(), tableReference.getDatasetId()),
+                "Tried to get a dataset %s:%s from %s, but no such table was set",
+                tableReference.getProjectId(),
+                tableReference.getDatasetId(),
+                FakeDatasetService.class.getSimpleName());
+        TableContainer tableContainer = dataset.get(tableReference.getTableId());
+        if (tableContainer == null) {
+          tableContainer = new TableContainer(new Table());
+          tableContainer.getTable().setSchema(schema);
+          dataset.put(tableReference.getTableId(), tableContainer);
+        }
+      }
     }
 
     @Override
@@ -545,55 +640,21 @@ public class BigQueryIOTest implements Serializable {
     public long insertAll(
         TableReference ref, List<TableRow> rowList, @Nullable List<String> insertIdList)
         throws IOException, InterruptedException {
-      throw new UnsupportedOperationException("Unsupported");
-    }
-
-    ////////////////////////////////// SERIALIZATION METHODS ////////////////////////////////////
-    private void writeObject(ObjectOutputStream out) throws IOException {
-      out.writeObject(replaceTablesWithBytes(this.tables));
-    }
-
-    private com.google.common.collect.Table<String, String, Map<String, byte[]>>
-    replaceTablesWithBytes(
-        com.google.common.collect.Table<String, String, Map<String, Table>> toCopy)
-        throws IOException {
-      com.google.common.collect.Table<String, String, Map<String, byte[]>> copy =
-          HashBasedTable.create();
-      for (Cell<String, String, Map<String, Table>> cell : toCopy.cellSet()) {
-        HashMap<String, byte[]> dataset = new HashMap<>();
-        copy.put(cell.getRowKey(), cell.getColumnKey(), dataset);
-        for (Map.Entry<String, Table> dsTables : cell.getValue().entrySet()) {
-          dataset.put(
-              dsTables.getKey(), Transport.getJsonFactory().toByteArray(dsTables.getValue()));
+      synchronized (tables) {
+        if (rowList.size() != insertIdList.size()) {
+          throw new AssertionError("If insertIdList is not null it needs to have at least "
+              + "as many elements as rowList");
         }
-      }
-      return copy;
-    }
 
-    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
-      com.google.common.collect.Table<String, String, Map<String, byte[]>> tablesTable =
-          (com.google.common.collect.Table<String, String, Map<String, byte[]>>) in.readObject();
-      this.tables = replaceBytesWithTables(tablesTable);
-    }
-
-    private com.google.common.collect.Table<String, String, Map<String, Table>>
-    replaceBytesWithTables(
-        com.google.common.collect.Table<String, String, Map<String, byte[]>> tablesTable)
-        throws IOException {
-      com.google.common.collect.Table<String, String, Map<String, Table>> copy =
-          HashBasedTable.create();
-      for (Cell<String, String, Map<String, byte[]>> cell : tablesTable.cellSet()) {
-        HashMap<String, Table> dataset = new HashMap<>();
-        copy.put(cell.getRowKey(), cell.getColumnKey(), dataset);
-        for (Map.Entry<String, byte[]> dsTables : cell.getValue().entrySet()) {
-          Table table =
-              Transport.getJsonFactory()
-                  .createJsonParser(new ByteArrayInputStream(dsTables.getValue()))
-                  .parse(Table.class);
-          dataset.put(dsTables.getKey(), table);
+        long dataSize = 0;
+        TableContainer tableContainer = getTableContainer(
+            ref.getProjectId(), ref.getDatasetId(), ref.getTableId());
+        for (int i = 0; i < rowList.size(); ++i) {
+          tableContainer.addRow(rowList.get(i), insertIdList.get(i));
+          dataSize += rowList.get(i).toString().length();
         }
+        return dataSize;
       }
-      return copy;
     }
   }
 
@@ -631,17 +692,17 @@ public class BigQueryIOTest implements Serializable {
   }
 
   private void checkWriteObject(
-      BigQueryIO.Write.Bound bound, String project, String dataset, String table,
-      TableSchema schema, CreateDisposition createDisposition,
-      WriteDisposition writeDisposition) {
+          BigQueryIO.Write.Bound bound, String project, String dataset, String table,
+          TableSchema schema, CreateDisposition createDisposition,
+          WriteDisposition writeDisposition) {
     checkWriteObjectWithValidate(
         bound, project, dataset, table, schema, createDisposition, writeDisposition, true);
   }
 
   private void checkWriteObjectWithValidate(
-      BigQueryIO.Write.Bound bound, String project, String dataset, String table,
-      TableSchema schema, CreateDisposition createDisposition,
-      WriteDisposition writeDisposition, boolean validate) {
+          BigQueryIO.Write.Bound bound, String project, String dataset, String table,
+          TableSchema schema, CreateDisposition createDisposition,
+          WriteDisposition writeDisposition, boolean validate) {
     assertEquals(project, bound.getTable().getProjectId());
     assertEquals(dataset, bound.getTable().getDatasetId());
     assertEquals(table, bound.getTable().getTableId());
@@ -654,6 +715,8 @@ public class BigQueryIOTest implements Serializable {
   @Before
   public void setUp() throws IOException {
     MockitoAnnotations.initMocks(this);
+    tables = HashBasedTable.create();
+    BigQueryIO.clearCreatedTables();
   }
 
   @Test
@@ -941,6 +1004,218 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   @Category(NeedsRunner.class)
+  public void testStreamingWrite() throws Exception {
+    BigQueryOptions bqOptions = TestPipeline.testingPipelineOptions().as(BigQueryOptions.class);
+    bqOptions.setProject("defaultProject");
+    bqOptions.setTempLocation(testFolder.newFolder("BigQueryIOTest").getAbsolutePath());
+
+    FakeDatasetService datasetService = new FakeDatasetService()
+        .withDataset("project-id", "dataset-id");
+    FakeBigQueryServices fakeBqServices = new FakeBigQueryServices()
+            .withDatasetService(datasetService);
+
+    Pipeline p = TestPipeline.create(bqOptions);
+    p.apply(Create.of(
+        new TableRow().set("name", "a").set("number", 1),
+        new TableRow().set("name", "b").set("number", 2),
+        new TableRow().set("name", "c").set("number", 3),
+        new TableRow().set("name", "d").set("number", 4))
+        .withCoder(TableRowJsonCoder.of()))
+            .setIsBoundedInternal(PCollection.IsBounded.UNBOUNDED)
+            .apply(BigQueryIO.Write.to("project-id:dataset-id.table-id")
+                    .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
+                    .withSchema(new TableSchema().setFields(
+                            ImmutableList.of(
+                                    new TableFieldSchema().setName("name").setType("STRING"),
+                                    new TableFieldSchema().setName("number").setType("INTEGER"))))
+                    .withTestServices(fakeBqServices)
+                    .withoutValidation());
+    p.run();
+
+
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id"),
+        containsInAnyOrder(
+            new TableRow().set("name", "a").set("number", 1),
+            new TableRow().set("name", "b").set("number", 2),
+            new TableRow().set("name", "c").set("number", 3),
+            new TableRow().set("name", "d").set("number", 4)));
+  }
+
+  /**
+   * A generic window function that allows partitioning data into windows by a string value.
+   *
+   * <p>Logically, creates multiple global windows, and the user provides a function that
+   * decides which global window a value should go into.
+   */
+  public static class PartitionedGlobalWindows extends
+
+      NonMergingWindowFn<TableRow, PartitionedGlobalWindow> {
+    private SerializableFunction<Object, String> extractPartition;
+
+    public PartitionedGlobalWindows(SerializableFunction<Object, String> extractPartition) {
+      this.extractPartition = extractPartition;
+    }
+
+    @Override
+    public Collection<PartitionedGlobalWindow> assignWindows(AssignContext c) {
+      return Collections.singletonList(new PartitionedGlobalWindow(
+          extractPartition.apply(c.element())));
+    }
+
+    @Override
+    public boolean isCompatible(WindowFn<?, ?> o) {
+      return o instanceof PartitionedGlobalWindows;
+    }
+
+    @Override
+    public Coder<PartitionedGlobalWindow> windowCoder() {
+      return new PartitionedGlobalWindowCoder();
+    }
+
+    @Override
+    public PartitionedGlobalWindow getSideInputWindow(BoundedWindow window) {
+      throw new UnsupportedOperationException(
+          "PartitionedGlobalWindows is not allowed in side inputs");
+    }
+
+    @Override
+    public Instant getOutputTime(Instant inputTimestamp, PartitionedGlobalWindow window) {
+      return inputTimestamp;
+    }
+  }
+
+  /**
+   * Custom Window object that encodes a String value.
+   */
+  public static class PartitionedGlobalWindow extends BoundedWindow {
+    String value;
+
+    public PartitionedGlobalWindow(String value) {
+      this.value = value;
+    }
+
+    @Override
+    public Instant maxTimestamp() {
+      return GlobalWindow.INSTANCE.maxTimestamp();
+    }
+
+    // The following methods are only needed due to BEAM-1022. Once this issue is fixed, we will
+    // no longer need these.
+    @Override public boolean equals(Object other) {
+      if (other instanceof PartitionedGlobalWindow) {
+        return value.equals(((PartitionedGlobalWindow) other).value);
+      }
+      return false;
+    }
+
+    @Override public int hashCode() {
+      return value.hashCode();
+    }
+  }
+
+  /**
+   * Coder for @link{PartitionedGlobalWindow}.
+   */
+  public static class PartitionedGlobalWindowCoder extends AtomicCoder<PartitionedGlobalWindow> {
+    @Override
+    public void encode(PartitionedGlobalWindow window, OutputStream outStream, Context context)
+        throws IOException, CoderException {
+      StringUtf8Coder.of().encode(window.value, outStream, context);
+    }
+
+    @Override
+    public PartitionedGlobalWindow decode(InputStream inStream, Context context)
+        throws IOException, CoderException {
+      return new PartitionedGlobalWindow(StringUtf8Coder.of().decode(inStream, context));
+    }
+  }
+
+  @Test
+  @Category(NeedsRunner.class)
+  public void testStreamingWriteWithWindowFn() throws Exception {
+    BigQueryOptions bqOptions = TestPipeline.testingPipelineOptions().as(BigQueryOptions.class);
+    bqOptions.setProject("defaultProject");
+    bqOptions.setTempLocation(testFolder.newFolder("BigQueryIOTest").getAbsolutePath());
+
+    FakeDatasetService datasetService = new FakeDatasetService()
+        .withDataset("project-id", "dataset-id");
+    FakeBigQueryServices fakeBqServices = new FakeBigQueryServices()
+        .withDatasetService(datasetService);
+
+    List<TableRow> inserts = new ArrayList<>();
+    for (int i = 0; i < 10; i++) {
+      inserts.add(new TableRow().set("name", "number" + i).set("number", i));
+    }
+
+    // Create a windowing strategy that puts the input into five different windows depending on
+    // record value.
+    WindowFn<TableRow, PartitionedGlobalWindow> window = new PartitionedGlobalWindows(
+        new SerializableFunction<Object, String>() {
+          @Override
+          public String apply(Object value) {
+            try {
+              if (value instanceof TableRow) {
+                int intValue = (Integer) ((TableRow) value).get("number") % 5;
+                return Integer.toString(intValue);
+              }
+            } catch (NumberFormatException e) {
+              // ignored.
+            }
+            return value.toString();
+          }
+        }
+    );
+
+    SerializableFunction<BoundedWindow, String> tableFunction =
+        new SerializableFunction<BoundedWindow, String>() {
+          @Override
+          public String apply(BoundedWindow input) {
+            return "project-id:dataset-id.table-id-" + ((PartitionedGlobalWindow) input).value;
+          }
+    };
+
+    Pipeline p = TestPipeline.create(bqOptions);
+    p.apply(Create.of(inserts)
+        .withCoder(TableRowJsonCoder.of()))
+        .setIsBoundedInternal(PCollection.IsBounded.UNBOUNDED)
+        .apply(Window.<TableRow>into(window))
+        .apply(BigQueryIO.Write
+            .to(tableFunction)
+            .withCreateDisposition(CreateDisposition.CREATE_IF_NEEDED)
+            .withSchema(new TableSchema().setFields(
+                ImmutableList.of(
+                    new TableFieldSchema().setName("name").setType("STRING"),
+                    new TableFieldSchema().setName("number").setType("INTEGER"))))
+            .withTestServices(fakeBqServices)
+            .withoutValidation());
+    p.run();
+
+
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-0"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number0").set("number", 0),
+            new TableRow().set("name", "number5").set("number", 5)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-1"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number1").set("number", 1),
+            new TableRow().set("name", "number6").set("number", 6)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-2"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number2").set("number", 2),
+            new TableRow().set("name", "number7").set("number", 7)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-3"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number3").set("number", 3),
+            new TableRow().set("name", "number8").set("number", 8)));
+    assertThat(datasetService.getAllRows("project-id", "dataset-id", "table-id-4"),
+        containsInAnyOrder(
+            new TableRow().set("name", "number4").set("number", 4),
+            new TableRow().set("name", "number9").set("number", 9)));
+  }
+
+
+  @Test
+  @Category(NeedsRunner.class)
   public void testWriteUnknown() throws Exception {
     BigQueryOptions bqOptions = TestPipeline.testingPipelineOptions().as(BigQueryOptions.class);
     bqOptions.setProject("defaultProject");
@@ -1027,7 +1302,8 @@ public class BigQueryIOTest implements Serializable {
 
   @Test
   public void testBuildWrite() {
-    BigQueryIO.Write.Bound bound = BigQueryIO.Write.to("foo.com:project:somedataset.sometable");
+    BigQueryIO.Write.Bound bound =
+            BigQueryIO.Write.to("foo.com:project:somedataset.sometable");
     checkWriteObject(
         bound, "foo.com:project", "somedataset", "sometable",
         null, CreateDisposition.CREATE_IF_NEEDED, WriteDisposition.WRITE_EMPTY);
@@ -1982,7 +2258,7 @@ public class BigQueryIOTest implements Serializable {
         String newDest = destination.replace("*", "000000000000");
         Schema schema = schemaGenerator.apply(null);
         try (WritableByteChannel channel = IOChannelUtils.create(newDest, MimeTypes.BINARY);
-            DataFileWriter<GenericRecord> tableRowWriter =
+             DataFileWriter<GenericRecord> tableRowWriter =
                 new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
                     .create(schema, Channels.newOutputStream(channel))) {
           for (Map<String, Object> record : records) {

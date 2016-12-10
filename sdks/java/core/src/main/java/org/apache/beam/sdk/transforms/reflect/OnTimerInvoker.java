@@ -15,27 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.sdk.io.kinesis;
+package org.apache.beam.sdk.transforms.reflect;
 
-import com.google.common.testing.EqualsTester;
-import java.util.NoSuchElementException;
-import org.junit.Test;
+import org.apache.beam.sdk.transforms.DoFn;
 
-/**
- * Tests {@link CustomOptional}.
- */
-public class CustomOptionalTest {
-    @Test(expected = NoSuchElementException.class)
-    public void absentThrowsNoSuchElementExceptionOnGet() {
-        CustomOptional.absent().get();
-    }
+/** Interface for invoking the {@link DoFn.OnTimer} method for a particular timer. */
+interface OnTimerInvoker<InputT, OutputT> {
 
-    @Test
-    public void testEqualsAndHashCode() {
-        new EqualsTester()
-            .addEqualityGroup(CustomOptional.absent(), CustomOptional.absent())
-            .addEqualityGroup(CustomOptional.of(3), CustomOptional.of(3))
-            .addEqualityGroup(CustomOptional.of(11))
-            .addEqualityGroup(CustomOptional.of("3")).testEquals();
-    }
+  /** Invoke the {@link DoFn.OnTimer} method in the provided context. */
+  void invokeOnTimer(DoFn.ExtraContextFactory<InputT, OutputT> extra);
 }
