@@ -201,10 +201,6 @@ public class BigQueryIOTest implements Serializable {
     private JobService jobService;
     private DatasetService datasetService;
 
-    public FakeBigQueryServices() {
-
-    }
-
     public FakeBigQueryServices withJobService(JobService jobService) {
       this.jobService = jobService;
       return this;
