@@ -18,10 +18,10 @@
 
 package org.apache.beam.runners.flink.translation;
 
-import com.google.common.collect.Iterables;
+import static com.google.common.base.Preconditions.checkArgument;
+
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -29,12 +29,13 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.apache.beam.runners.core.SystemReduceFn;
 import org.apache.beam.runners.flink.FlinkRunner;
+import org.apache.beam.runners.flink.translation.functions.FlinkAssignWindows;
 import org.apache.beam.runners.flink.translation.types.CoderTypeInformation;
 import org.apache.beam.runners.flink.translation.types.FlinkCoder;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.DoFnOperator;
+import org.apache.beam.runners.flink.translation.wrappers.streaming.KvToByteBufferKeySelector;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.SingletonKeyedWorkItem;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.SingletonKeyedWorkItemCoder;
 import org.apache.beam.runners.flink.translation.wrappers.streaming.WindowDoFnOperator;
@@ -51,13 +52,15 @@ import org.apache.beam.sdk.io.Sink;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.io.Write;
 import org.apache.beam.sdk.transforms.Combine;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.Flatten;
 import org.apache.beam.sdk.transforms.GroupByKey;
-import org.apache.beam.sdk.transforms.OldDoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.join.RawUnionValue;
 import org.apache.beam.sdk.transforms.join.UnionCoder;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
@@ -71,6 +74,7 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PValue;
+import org.apache.beam.sdk.values.TaggedPValue;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -78,11 +82,13 @@ import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.streaming.api.collector.selector.OutputSelector;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.KeyedStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.datastream.SplitStream;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
@@ -219,6 +225,9 @@ public class FlinkStreamingTransformTranslators {
         FlinkStreamingTranslationContext context) {
       PCollection<T> output = context.getOutput(transform);
 
+      TypeInformation<WindowedValue<T>> outputTypeInfo =
+          context.getTypeInfo(context.getOutput(transform));
+
       DataStream<WindowedValue<T>> source;
       if (transform.getSource().getClass().equals(UnboundedFlinkSource.class)) {
         @SuppressWarnings("unchecked")
@@ -246,10 +255,9 @@ public class FlinkStreamingTransformTranslators {
                         new Instant(flinkAssigner.extractTimestamp(s, -1)),
                         GlobalWindow.INSTANCE,
                         PaneInfo.NO_FIRING));
-              }});
+              }}).returns(outputTypeInfo);
       } else {
         try {
-          transform.getSource();
           UnboundedSourceWrapper<T, ?> sourceWrapper =
               new UnboundedSourceWrapper<>(
                   context.getPipelineOptions(),
@@ -257,7 +265,7 @@ public class FlinkStreamingTransformTranslators {
                   context.getExecutionEnvironment().getParallelism());
           source = context
               .getExecutionEnvironment()
-              .addSource(sourceWrapper).name(transform.getName());
+              .addSource(sourceWrapper).name(transform.getName()).returns(outputTypeInfo);
         } catch (Exception e) {
           throw new RuntimeException(
               "Error while translating UnboundedSource: " + transform.getSource(), e);
@@ -277,9 +285,12 @@ public class FlinkStreamingTransformTranslators {
         FlinkStreamingTranslationContext context) {
       PCollection<T> output = context.getOutput(transform);
 
+      TypeInformation<WindowedValue<T>> outputTypeInfo =
+          context.getTypeInfo(context.getOutput(transform));
+
+
       DataStream<WindowedValue<T>> source;
       try {
-        transform.getSource();
         BoundedSourceWrapper<T> sourceWrapper =
             new BoundedSourceWrapper<>(
                 context.getPipelineOptions(),
@@ -287,13 +298,27 @@ public class FlinkStreamingTransformTranslators {
                 context.getExecutionEnvironment().getParallelism());
         source = context
             .getExecutionEnvironment()
-            .addSource(sourceWrapper).name(transform.getName());
+            .addSource(sourceWrapper).name(transform.getName()).returns(outputTypeInfo);
       } catch (Exception e) {
         throw new RuntimeException(
             "Error while translating BoundedSource: " + transform.getSource(), e);
       }
 
       context.setOutputDataStream(output, source);
+    }
+  }
+
+  private static void rejectTimers(DoFn<?, ?> doFn) {
+    DoFnSignature signature = DoFnSignatures.getSignature(doFn.getClass());
+
+    if (signature.timerDeclarations().size() > 0) {
+      throw new UnsupportedOperationException(
+          String.format(
+              "Found %s annotations on %s, but %s cannot yet be used with timers in the %s.",
+              DoFn.TimerId.class.getSimpleName(),
+              doFn.getClass().getName(),
+              DoFn.class.getSimpleName(),
+              FlinkRunner.class.getSimpleName()));
     }
   }
 
@@ -305,6 +330,9 @@ public class FlinkStreamingTransformTranslators {
     public void translateNode(
         ParDo.Bound<InputT, OutputT> transform,
         FlinkStreamingTranslationContext context) {
+
+      DoFn<InputT, OutputT> doFn = transform.getFn();
+      rejectTimers(doFn);
 
       WindowingStrategy<?, ?> windowingStrategy =
           context.getOutput(transform).getWindowingStrategy();
@@ -320,6 +348,20 @@ public class FlinkStreamingTransformTranslators {
       TypeInformation<WindowedValue<InputT>> inputTypeInfo =
           context.getTypeInfo(inputPCollection);
 
+      DataStream<WindowedValue<InputT>> inputDataStream =
+          context.getInputDataStream(context.getInput(transform));
+      Coder keyCoder = null;
+      boolean stateful = false;
+      DoFnSignature signature = DoFnSignatures.getSignature(transform.getFn().getClass());
+      if (signature.stateDeclarations().size() > 0
+          || signature.timerDeclarations().size() > 0) {
+        // Based on the fact that the signature is stateful, DoFnSignatures ensures
+        // that it is also keyed
+        keyCoder = ((KvCoder) inputPCollection.getCoder()).getKeyCoder();
+        inputDataStream = inputDataStream.keyBy(new KvToByteBufferKeySelector(keyCoder));
+        stateful = true;
+      }
+
       if (sideInputs.isEmpty()) {
         DoFnOperator<InputT, OutputT, WindowedValue<OutputT>> doFnOperator =
             new DoFnOperator<>(
@@ -331,10 +373,8 @@ public class FlinkStreamingTransformTranslators {
                 windowingStrategy,
                 new HashMap<Integer, PCollectionView<?>>(), /* side-input mapping */
                 Collections.<PCollectionView<?>>emptyList(), /* side inputs */
-                context.getPipelineOptions());
-
-        DataStream<WindowedValue<InputT>> inputDataStream =
-            context.getInputDataStream(context.getInput(transform));
+                context.getPipelineOptions(),
+                keyCoder);
 
         SingleOutputStreamOperator<WindowedValue<OutputT>> outDataStream = inputDataStream
             .transform(transform.getName(), typeInfo, doFnOperator);
@@ -354,17 +394,39 @@ public class FlinkStreamingTransformTranslators {
                 windowingStrategy,
                 transformedSideInputs.f0,
                 sideInputs,
-                context.getPipelineOptions());
+                context.getPipelineOptions(),
+                keyCoder);
 
-        DataStream<WindowedValue<InputT>> inputDataStream =
-            context.getInputDataStream(context.getInput(transform));
+        SingleOutputStreamOperator<WindowedValue<OutputT>> outDataStream;
+        if (stateful) {
+          // we have to manually contruct the two-input transform because we're not
+          // allowed to have only one input keyed, normally.
+          KeyedStream keyedStream = (KeyedStream<?, InputT>) inputDataStream;
+          TwoInputTransformation<
+              WindowedValue<KV<?, InputT>>,
+              RawUnionValue,
+              WindowedValue<OutputT>> rawFlinkTransform = new TwoInputTransformation<>(
+              keyedStream.getTransformation(),
+              transformedSideInputs.f1.broadcast().getTransformation(),
+              transform.getName(),
+              (TwoInputStreamOperator) doFnOperator,
+              typeInfo,
+              keyedStream.getParallelism());
 
-        SingleOutputStreamOperator<WindowedValue<OutputT>> outDataStream = inputDataStream
-            .connect(transformedSideInputs.f1.broadcast())
-            .transform(transform.getName(), typeInfo, doFnOperator);
+          rawFlinkTransform.setStateKeyType(keyedStream.getKeyType());
+          rawFlinkTransform.setStateKeySelectors(keyedStream.getKeySelector(), null);
 
+          outDataStream = new SingleOutputStreamOperator(
+                  keyedStream.getExecutionEnvironment(),
+                  rawFlinkTransform) {}; // we have to cheat around the ctor being protected
+
+          keyedStream.getExecutionEnvironment().addOperator(rawFlinkTransform);
+        } else {
+          outDataStream = inputDataStream
+              .connect(transformedSideInputs.f1.broadcast())
+              .transform(transform.getName(), typeInfo, doFnOperator);
+        }
         context.setOutputDataStream(context.getOutput(transform), outDataStream);
-
       }
     }
   }
@@ -455,14 +517,17 @@ public class FlinkStreamingTransformTranslators {
         ParDo.BoundMulti<InputT, OutputT> transform,
         FlinkStreamingTranslationContext context) {
 
+      DoFn<InputT, OutputT> doFn = transform.getFn();
+      rejectTimers(doFn);
+
       // we assume that the transformation does not change the windowing strategy.
       WindowingStrategy<?, ?> windowingStrategy =
           context.getInput(transform).getWindowingStrategy();
 
-      Map<TupleTag<?>, PCollection<?>> outputs = context.getOutput(transform).getAll();
+      List<TaggedPValue> outputs = context.getOutputs(transform);
 
       Map<TupleTag<?>, Integer> tagsToLabels =
-          transformTupleTagsToLabels(transform.getMainOutputTag(), outputs.keySet());
+          transformTupleTagsToLabels(transform.getMainOutputTag(), outputs);
 
       List<PCollectionView<?>> sideInputs = transform.getSideInputs();
 
@@ -473,6 +538,20 @@ public class FlinkStreamingTransformTranslators {
 
       TypeInformation<WindowedValue<InputT>> inputTypeInfo =
           context.getTypeInfo(inputPCollection);
+
+      DataStream<WindowedValue<InputT>> inputDataStream =
+          context.getInputDataStream(context.getInput(transform));
+      Coder keyCoder = null;
+      boolean stateful = false;
+      DoFnSignature signature = DoFnSignatures.getSignature(transform.getFn().getClass());
+      if (signature.stateDeclarations().size() > 0
+          || signature.timerDeclarations().size() > 0) {
+        // Based on the fact that the signature is stateful, DoFnSignatures ensures
+        // that it is also keyed
+        keyCoder = ((KvCoder) inputPCollection.getCoder()).getKeyCoder();
+        inputDataStream = inputDataStream.keyBy(new KvToByteBufferKeySelector(keyCoder));
+        stateful = true;
+      }
 
       if (sideInputs.isEmpty()) {
         DoFnOperator<InputT, OutputT, RawUnionValue> doFnOperator =
@@ -485,15 +564,13 @@ public class FlinkStreamingTransformTranslators {
                 windowingStrategy,
                 new HashMap<Integer, PCollectionView<?>>(), /* side-input mapping */
                 Collections.<PCollectionView<?>>emptyList(), /* side inputs */
-                context.getPipelineOptions());
+                context.getPipelineOptions(),
+                keyCoder);
 
-        UnionCoder outputUnionCoder = createUnionCoder(outputs.values());
+        UnionCoder outputUnionCoder = createUnionCoder(outputs);
 
         CoderTypeInformation<RawUnionValue> outputUnionTypeInformation =
             new CoderTypeInformation<>(outputUnionCoder);
-
-        DataStream<WindowedValue<InputT>> inputDataStream =
-            context.getInputDataStream(context.getInput(transform));
 
         unionOutputStream = inputDataStream
             .transform(transform.getName(), outputUnionTypeInformation, doFnOperator);
@@ -512,62 +589,95 @@ public class FlinkStreamingTransformTranslators {
                 windowingStrategy,
                 transformedSideInputs.f0,
                 sideInputs,
-                context.getPipelineOptions());
+                context.getPipelineOptions(),
+                keyCoder);
 
-        UnionCoder outputUnionCoder = createUnionCoder(outputs.values());
+        UnionCoder outputUnionCoder = createUnionCoder(outputs);
 
         CoderTypeInformation<RawUnionValue> outputUnionTypeInformation =
             new CoderTypeInformation<>(outputUnionCoder);
 
-        DataStream<WindowedValue<InputT>> inputDataStream =
-            context.getInputDataStream(context.getInput(transform));
+        if (stateful) {
+          // we have to manually contruct the two-input transform because we're not
+          // allowed to have only one input keyed, normally.
+          KeyedStream keyedStream = (KeyedStream<?, InputT>) inputDataStream;
+          TwoInputTransformation<
+              WindowedValue<KV<?, InputT>>,
+              RawUnionValue,
+              WindowedValue<OutputT>> rawFlinkTransform = new TwoInputTransformation(
+              keyedStream.getTransformation(),
+              transformedSideInputs.f1.broadcast().getTransformation(),
+              transform.getName(),
+              (TwoInputStreamOperator) doFnOperator,
+              outputUnionTypeInformation,
+              keyedStream.getParallelism());
 
-        unionOutputStream = inputDataStream
-            .connect(transformedSideInputs.f1.broadcast())
-            .transform(transform.getName(), outputUnionTypeInformation, doFnOperator);
+          rawFlinkTransform.setStateKeyType(keyedStream.getKeyType());
+          rawFlinkTransform.setStateKeySelectors(keyedStream.getKeySelector(), null);
+
+          unionOutputStream = new SingleOutputStreamOperator(
+                  keyedStream.getExecutionEnvironment(),
+                  rawFlinkTransform) {}; // we have to cheat around the ctor being protected
+
+          keyedStream.getExecutionEnvironment().addOperator(rawFlinkTransform);
+
+        } else {
+          unionOutputStream = inputDataStream
+              .connect(transformedSideInputs.f1.broadcast())
+              .transform(transform.getName(), outputUnionTypeInformation, doFnOperator);
+        }
       }
 
-      for (Map.Entry<TupleTag<?>, PCollection<?>> output : outputs.entrySet()) {
-        final int outputTag = tagsToLabels.get(output.getKey());
+      SplitStream<RawUnionValue> splitStream = unionOutputStream
+              .split(new OutputSelector<RawUnionValue>() {
+                @Override
+                public Iterable<String> select(RawUnionValue value) {
+                  return Collections.singletonList(Integer.toString(value.getUnionTag()));
+                }
+              });
 
-        TypeInformation outputTypeInfo =
-            context.getTypeInfo(output.getValue());
+      for (TaggedPValue output : outputs) {
+        final int outputTag = tagsToLabels.get(output.getTag());
+
+        TypeInformation outputTypeInfo = context.getTypeInfo((PCollection<?>) output.getValue());
 
         @SuppressWarnings("unchecked")
-        DataStream filtered =
-            unionOutputStream.flatMap(new FlatMapFunction<RawUnionValue, Object>() {
-              @Override
-              public void flatMap(RawUnionValue value, Collector<Object> out) throws Exception {
-                System.out.println("FILTERING: " + value);
-                if (value.getUnionTag() == outputTag) {
-                  System.out.println("EMITTING VALUE: " + value);
-                  out.collect(value.getValue());
-                }
-              }
-            }).returns(outputTypeInfo);
+        DataStream unwrapped = splitStream.select(String.valueOf(outputTag))
+          .flatMap(new FlatMapFunction<RawUnionValue, Object>() {
+            @Override
+            public void flatMap(RawUnionValue value, Collector<Object> out) throws Exception {
+              out.collect(value.getValue());
+            }
+          }).returns(outputTypeInfo);
 
-        context.setOutputDataStream(output.getValue(), filtered);
+        context.setOutputDataStream(output.getValue(), unwrapped);
       }
     }
 
     private Map<TupleTag<?>, Integer> transformTupleTagsToLabels(
         TupleTag<?> mainTag,
-        Set<TupleTag<?>> secondaryTags) {
+        List<TaggedPValue> allTaggedValues) {
 
       Map<TupleTag<?>, Integer> tagToLabelMap = Maps.newHashMap();
       int count = 0;
       tagToLabelMap.put(mainTag, count++);
-      for (TupleTag<?> tag : secondaryTags) {
-        if (!tagToLabelMap.containsKey(tag)) {
-          tagToLabelMap.put(tag, count++);
+      for (TaggedPValue taggedPValue : allTaggedValues) {
+        if (!tagToLabelMap.containsKey(taggedPValue.getTag())) {
+          tagToLabelMap.put(taggedPValue.getTag(), count++);
         }
       }
       return tagToLabelMap;
     }
 
-    private UnionCoder createUnionCoder(Collection<PCollection<?>> taggedCollections) {
+    private UnionCoder createUnionCoder(Collection<TaggedPValue> taggedCollections) {
       List<Coder<?>> outputCoders = Lists.newArrayList();
-      for (PCollection<?> coll : taggedCollections) {
+      for (TaggedPValue taggedColl : taggedCollections) {
+        checkArgument(
+            taggedColl.getValue() instanceof PCollection,
+            "A Union Coder can only be created for a Collection of Tagged %s. Got %s",
+            PCollection.class.getSimpleName(),
+            taggedColl.getValue().getClass().getSimpleName());
+        PCollection<?> coll = (PCollection<?>) taggedColl.getValue();
         WindowedValue.FullWindowedValueCoder<?> windowedValueCoder =
             WindowedValue.getFullCoder(
                 coll.getCoder(),
@@ -606,69 +716,26 @@ public class FlinkStreamingTransformTranslators {
 
       @SuppressWarnings("unchecked")
       WindowingStrategy<T, BoundedWindow> windowingStrategy =
-          (WindowingStrategy<T, BoundedWindow>) context.getOutput(transform).getWindowingStrategy();
+          (WindowingStrategy<T, BoundedWindow>)
+              context.getOutput(transform).getWindowingStrategy();
 
       TypeInformation<WindowedValue<T>> typeInfo =
           context.getTypeInfo(context.getOutput(transform));
 
-      OldDoFn<T, T> windowAssignerDoFn =
-          createWindowAssigner(windowingStrategy.getWindowFn());
-
-      @SuppressWarnings("unchecked")
-      PCollection<T> inputPCollection = context.getInput(transform);
-
-      TypeInformation<WindowedValue<T>> inputTypeInfo =
-          context.getTypeInfo(inputPCollection);
-
-      DoFnOperator<T, T, WindowedValue<T>> doFnOperator = new DoFnOperator<>(
-          windowAssignerDoFn,
-          inputTypeInfo,
-          new TupleTag<T>("main output"),
-          Collections.<TupleTag<?>>emptyList(),
-          new DoFnOperator.DefaultOutputManagerFactory<WindowedValue<T>>(),
-          windowingStrategy,
-          new HashMap<Integer, PCollectionView<?>>(), /* side-input mapping */
-          Collections.<PCollectionView<?>>emptyList(), /* side inputs */
-          context.getPipelineOptions());
-
       DataStream<WindowedValue<T>> inputDataStream =
           context.getInputDataStream(context.getInput(transform));
 
-      SingleOutputStreamOperator<WindowedValue<T>> outDataStream = inputDataStream
-          .transform(transform.getName(), typeInfo, doFnOperator);
+      WindowFn<T, ? extends BoundedWindow> windowFn = windowingStrategy.getWindowFn();
 
-      context.setOutputDataStream(context.getOutput(transform), outDataStream);
-    }
+      FlinkAssignWindows<T, ? extends BoundedWindow> assignWindowsFunction =
+          new FlinkAssignWindows<>(windowFn);
 
-    private static <T, W extends BoundedWindow> OldDoFn<T, T> createWindowAssigner(
-        final WindowFn<T, W> windowFn) {
+      SingleOutputStreamOperator<WindowedValue<T>> outputDataStream = inputDataStream
+          .flatMap(assignWindowsFunction)
+          .name(context.getOutput(transform).getName())
+          .returns(typeInfo);
 
-      return new OldDoFn<T, T>() {
-
-        @Override
-        public void processElement(final ProcessContext c) throws Exception {
-          Collection<W> windows = windowFn.assignWindows(
-              windowFn.new AssignContext() {
-                @Override
-                public T element() {
-                  return c.element();
-                }
-
-                @Override
-                public Instant timestamp() {
-                  return c.timestamp();
-                }
-
-                @Override
-                public BoundedWindow window() {
-                  return Iterables.getOnlyElement(c.windowingInternals().windows());
-                }
-              });
-
-          c.windowingInternals().outputWindowedValue(
-              c.element(), c.timestamp(), windows, c.pane());
-        }
-      };
+      context.setOutputDataStream(context.getOutput(transform), outputDataStream);
     }
   }
 
@@ -942,7 +1009,7 @@ public class FlinkStreamingTransformTranslators {
     public void translateNode(
         Flatten.FlattenPCollectionList<T> transform,
         FlinkStreamingTranslationContext context) {
-      List<PCollection<T>> allInputs = context.getInput(transform).getAll();
+      List<TaggedPValue> allInputs = context.getInputs(transform);
 
       if (allInputs.isEmpty()) {
 
@@ -969,8 +1036,8 @@ public class FlinkStreamingTransformTranslators {
 
       } else {
         DataStream<T> result = null;
-        for (PCollection<T> collection : allInputs) {
-          DataStream<T> current = context.getInputDataStream(collection);
+        for (TaggedPValue input : allInputs) {
+          DataStream<T> current = context.getInputDataStream(input.getValue());
           result = (result == null) ? current : result.union(current);
         }
         context.setOutputDataStream(context.getOutput(transform), result);

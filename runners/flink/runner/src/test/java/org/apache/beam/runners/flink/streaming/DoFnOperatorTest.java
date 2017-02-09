@@ -25,7 +25,6 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-
 import java.util.Collections;
 import java.util.HashMap;
 import javax.annotation.Nullable;
@@ -35,7 +34,7 @@ import org.apache.beam.runners.flink.translation.wrappers.streaming.DoFnOperator
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.PCollectionViewTesting;
-import org.apache.beam.sdk.transforms.OldDoFn;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.join.RawUnionValue;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
@@ -104,7 +103,8 @@ public class DoFnOperatorTest {
         WindowingStrategy.globalDefault(),
         new HashMap<Integer, PCollectionView<?>>(), /* side-input mapping */
         Collections.<PCollectionView<?>>emptyList(), /* side inputs */
-        PipelineOptionsFactory.as(FlinkPipelineOptions.class));
+        PipelineOptionsFactory.as(FlinkPipelineOptions.class),
+        null);
 
     OneInputStreamOperatorTestHarness<WindowedValue<String>, String> testHarness =
         new OneInputStreamOperatorTestHarness<>(doFnOperator);
@@ -148,7 +148,8 @@ public class DoFnOperatorTest {
         WindowingStrategy.globalDefault(),
         new HashMap<Integer, PCollectionView<?>>(), /* side-input mapping */
         Collections.<PCollectionView<?>>emptyList(), /* side inputs */
-        PipelineOptionsFactory.as(FlinkPipelineOptions.class));
+        PipelineOptionsFactory.as(FlinkPipelineOptions.class),
+        null);
 
     OneInputStreamOperatorTestHarness<WindowedValue<String>, RawUnionValue> testHarness =
         new OneInputStreamOperatorTestHarness<>(doFnOperator);
@@ -208,7 +209,8 @@ public class DoFnOperatorTest {
         WindowingStrategy.globalDefault(),
         sideInputMapping, /* side-input mapping */
         ImmutableList.<PCollectionView<?>>of(view1, view2), /* side inputs */
-        PipelineOptionsFactory.as(FlinkPipelineOptions.class));
+        PipelineOptionsFactory.as(FlinkPipelineOptions.class),
+        null);
 
     TwoInputStreamOperatorTestHarness<WindowedValue<String>, RawUnionValue, String> testHarness =
         new TwoInputStreamOperatorTestHarness<>(doFnOperator);
@@ -280,7 +282,7 @@ public class DoFnOperatorTest {
     });
   }
 
-  private static class MultiOutputDoFn extends OldDoFn<String, String> {
+  private static class MultiOutputDoFn extends DoFn<String, String> {
     private TupleTag<String> sideOutput1;
     private TupleTag<String> sideOutput2;
 
@@ -289,7 +291,7 @@ public class DoFnOperatorTest {
       this.sideOutput2 = sideOutput2;
     }
 
-    @Override
+    @ProcessElement
     public void processElement(ProcessContext c) throws Exception {
       if (c.element().equals("one")) {
         c.sideOutput(sideOutput1, "side: one");
@@ -303,9 +305,9 @@ public class DoFnOperatorTest {
     }
   }
 
-  private static class IdentityDoFn<T> extends OldDoFn<T, T> {
-    @Override
-    public void processElement(OldDoFn<T, T>.ProcessContext c) throws Exception {
+  private static class IdentityDoFn<T> extends DoFn<T, T> {
+    @ProcessElement
+    public void processElement(ProcessContext c) throws Exception {
       c.output(c.element());
     }
   }

@@ -126,7 +126,7 @@ public class UserScore {
     // Log and count parse errors.
     private static final Logger LOG = LoggerFactory.getLogger(ParseEventFn.class);
     private final Aggregator<Long, Long> numParseErrors =
-        createAggregator("ParseErrors", new Sum.SumLongFn());
+        createAggregator("ParseErrors", Sum.ofLongs());
 
     @ProcessElement
     public void processElement(ProcessContext c) {
@@ -160,7 +160,7 @@ public class UserScore {
     }
 
     @Override
-    public PCollection<KV<String, Integer>> apply(
+    public PCollection<KV<String, Integer>> expand(
         PCollection<GameActionInfo> gameInfo) {
 
       return gameInfo
@@ -193,8 +193,8 @@ public class UserScore {
 
     @Description("The BigQuery table name. Should not already exist.")
     @Default.String("user_score")
-    String getTableName();
-    void setTableName(String value);
+    String getUserScoreTableName();
+    void setUserScoreTableName(String value);
   }
 
   /**
@@ -232,7 +232,7 @@ public class UserScore {
       // Extract and sum username/score pairs from the event data.
       .apply("ExtractUserScore", new ExtractAndSumScore("user"))
       .apply("WriteUserScoreSums",
-          new WriteToBigQuery<KV<String, Integer>>(options.getTableName(),
+          new WriteToBigQuery<KV<String, Integer>>(options.getUserScoreTableName(),
                                                    configureBigQueryWrite()));
 
     // Run the batch pipeline.

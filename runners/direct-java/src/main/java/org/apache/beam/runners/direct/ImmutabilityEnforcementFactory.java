@@ -32,8 +32,6 @@ import org.apache.beam.sdk.util.WindowedValue;
 /**
  * {@link ModelEnforcement} that enforces elements are not modified over the course of processing
  * an element.
- *
- * <p>Implies {@link EncodabilityEnforcment}.
  */
 class ImmutabilityEnforcementFactory implements ModelEnforcementFactory {
   public static ModelEnforcementFactory create() {
@@ -76,7 +74,7 @@ class ImmutabilityEnforcementFactory implements ModelEnforcementFactory {
     @Override
     public void afterFinish(
         CommittedBundle<T> input,
-        TransformResult result,
+        TransformResult<T> result,
         Iterable<? extends CommittedBundle<?>> outputs) {
       for (MutationDetector detector : mutationElements.values()) {
         verifyUnmodified(detector);

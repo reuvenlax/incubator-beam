@@ -35,28 +35,6 @@ public class DoFnSignaturesProcessElementTest {
   @Rule public ExpectedException thrown = ExpectedException.none();
 
   @Test
-  public void testMissingProcessContext() throws Exception {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Must take ProcessContext<> as the first argument");
-
-    analyzeProcessElementMethod(
-        new AnonymousMethod() {
-          private void method() {}
-        });
-  }
-
-  @Test
-  public void testBadProcessContextType() throws Exception {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Must take ProcessContext<> as the first argument");
-
-    analyzeProcessElementMethod(
-        new AnonymousMethod() {
-          private void method(String s) {}
-        });
-  }
-
-  @Test
   public void testBadExtraProcessContextType() throws Exception {
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(
@@ -87,41 +65,35 @@ public class DoFnSignaturesProcessElementTest {
     analyzeProcessElementMethod(
         new AnonymousMethod() {
           private void method(
-              DoFn<Integer, String>.ProcessContext c,
-              DoFn.InputProvider<Integer> input,
-              DoFn.OutputReceiver<String> output) {}
+              DoFn<Integer, String>.ProcessContext c) {}
         });
   }
 
   @Test
   public void testBadGenericsTwoArgs() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("OutputReceiver<Integer>");
-    thrown.expectMessage("should be");
-    thrown.expectMessage("OutputReceiver<String>");
+    thrown.expectMessage("DoFn<Integer, Integer>.ProcessContext");
+    thrown.expectMessage("must have type");
+    thrown.expectMessage("DoFn<Integer, String>.ProcessContext");
 
     analyzeProcessElementMethod(
         new AnonymousMethod() {
           private void method(
-              DoFn<Integer, String>.ProcessContext c,
-              DoFn.InputProvider<Integer> input,
-              DoFn.OutputReceiver<Integer> output) {}
+              DoFn<Integer, Integer>.ProcessContext c) {}
         });
   }
 
   @Test
   public void testBadGenericWildCards() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("OutputReceiver<? super Integer>");
-    thrown.expectMessage("should be");
-    thrown.expectMessage("OutputReceiver<String>");
+    thrown.expectMessage("DoFn<Integer, ? super Integer>.ProcessContext");
+    thrown.expectMessage("must have type");
+    thrown.expectMessage("DoFn<Integer, String>.ProcessContext");
 
     analyzeProcessElementMethod(
         new AnonymousMethod() {
           private void method(
-              DoFn<Integer, String>.ProcessContext c,
-              DoFn.InputProvider<Integer> input,
-              DoFn.OutputReceiver<? super Integer> output) {}
+              DoFn<Integer, ? super Integer>.ProcessContext c) {}
         });
   }
 
@@ -129,19 +101,17 @@ public class DoFnSignaturesProcessElementTest {
     @ProcessElement
     @SuppressWarnings("unused")
     public void badTypeVariables(
-        DoFn<InputT, OutputT>.ProcessContext c,
-        DoFn.InputProvider<InputT> input,
-        DoFn.OutputReceiver<InputT> output) {}
+        DoFn<InputT, InputT>.ProcessContext c) {}
   }
 
   @Test
   public void testBadTypeVariables() throws Exception {
     thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("OutputReceiver<InputT>");
-    thrown.expectMessage("should be");
-    thrown.expectMessage("OutputReceiver<OutputT>");
+    thrown.expectMessage("DoFn<InputT, InputT>.ProcessContext");
+    thrown.expectMessage("must have type");
+    thrown.expectMessage("DoFn<InputT, OutputT>.ProcessContext");
 
-    DoFnSignatures.INSTANCE.getSignature(BadTypeVariables.class);
+    DoFnSignatures.getSignature(BadTypeVariables.class);
   }
 
   @Test
@@ -149,7 +119,7 @@ public class DoFnSignaturesProcessElementTest {
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage("No method annotated with @ProcessElement found");
     thrown.expectMessage(getClass().getName() + "$");
-    DoFnSignatures.INSTANCE.getSignature(new DoFn<String, String>() {}.getClass());
+    DoFnSignatures.getSignature(new DoFn<String, String>() {}.getClass());
   }
 
   @Test
@@ -159,7 +129,7 @@ public class DoFnSignaturesProcessElementTest {
     thrown.expectMessage("foo()");
     thrown.expectMessage("bar()");
     thrown.expectMessage(getClass().getName() + "$");
-    DoFnSignatures.INSTANCE.getSignature(
+    DoFnSignatures.getSignature(
         new DoFn<String, String>() {
           @ProcessElement
           public void foo() {}
@@ -175,7 +145,7 @@ public class DoFnSignaturesProcessElementTest {
     thrown.expectMessage("process()");
     thrown.expectMessage("Must be public");
     thrown.expectMessage(getClass().getName() + "$");
-    DoFnSignatures.INSTANCE.getSignature(
+    DoFnSignatures.getSignature(
         new DoFn<String, String>() {
           @ProcessElement
           private void process() {}
@@ -186,20 +156,18 @@ public class DoFnSignaturesProcessElementTest {
     @ProcessElement
     @SuppressWarnings("unused")
     public void goodTypeVariables(
-        DoFn<InputT, OutputT>.ProcessContext c,
-        DoFn.InputProvider<InputT> input,
-        DoFn.OutputReceiver<OutputT> output) {}
+        DoFn<InputT, OutputT>.ProcessContext c) {}
   }
 
   @Test
   public void testGoodTypeVariables() throws Exception {
-    DoFnSignatures.INSTANCE.getSignature(GoodTypeVariables.class);
+    DoFnSignatures.getSignature(GoodTypeVariables.class);
   }
 
   private static class IdentityFn<T> extends DoFn<T, T> {
     @ProcessElement
     @SuppressWarnings("unused")
-    public void processElement(ProcessContext c, InputProvider<T> input, OutputReceiver<T> output) {
+    public void processElement(ProcessContext c) {
       c.output(c.element());
     }
   }
@@ -208,6 +176,6 @@ public class DoFnSignaturesProcessElementTest {
 
   @Test
   public void testIdentityFnApplied() throws Exception {
-    DoFnSignatures.INSTANCE.getSignature(new IdentityFn<String>() {}.getClass());
+    DoFnSignatures.getSignature(new IdentityFn<String>() {}.getClass());
   }
 }

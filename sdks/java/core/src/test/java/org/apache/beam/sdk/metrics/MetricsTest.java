@@ -18,18 +18,32 @@
 
 package org.apache.beam.sdk.metrics;
 
+import static org.apache.beam.sdk.metrics.MetricMatchers.attemptedMetricsResult;
+import static org.apache.beam.sdk.metrics.MetricMatchers.committedMetricsResult;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasItem;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 
+import java.io.Serializable;
+import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.testing.RunnableOnService;
+import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.testing.UsesAttemptedMetrics;
+import org.apache.beam.sdk.testing.UsesCommittedMetrics;
+import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.ParDo;
 import org.hamcrest.CoreMatchers;
 import org.junit.After;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
 /**
  * Tests for {@link Metrics}.
  */
-public class MetricsTest {
+public class MetricsTest implements Serializable {
 
   private static final String NS = "test";
   private static final String NAME = "name";
@@ -37,7 +51,7 @@ public class MetricsTest {
 
   @After
   public void tearDown() {
-    MetricsEnvironment.unsetMetricsContainer();
+    MetricsEnvironment.setCurrentContainer(null);
   }
 
   @Test
@@ -61,7 +75,7 @@ public class MetricsTest {
   @Test
   public void distributionToCell() {
     MetricsContainer container = new MetricsContainer("step");
-    MetricsEnvironment.setMetricsContainer(container);
+    MetricsEnvironment.setCurrentContainer(container);
 
     Distribution distribution = Metrics.distribution(NS, NAME);
 
@@ -80,7 +94,7 @@ public class MetricsTest {
   @Test
   public void counterToCell() {
     MetricsContainer container = new MetricsContainer("step");
-    MetricsEnvironment.setMetricsContainer(container);
+    MetricsEnvironment.setCurrentContainer(container);
     Counter counter = Metrics.counter(NS, NAME);
     CounterCell cell = container.getCounter(METRIC_NAME);
     counter.inc();
@@ -94,5 +108,83 @@ public class MetricsTest {
 
     counter.dec();
     assertThat(cell.getCumulative(), CoreMatchers.equalTo(42L));
+  }
+
+  @Category({RunnableOnService.class, UsesCommittedMetrics.class})
+  @Test
+  public void committedMetricsReportToQuery() {
+    PipelineResult result = runPipelineWithMetrics();
+
+    MetricQueryResults metrics = result.metrics().queryMetrics(MetricsFilter.builder()
+      .addNameFilter(MetricNameFilter.inNamespace(MetricsTest.class))
+      .build());
+
+    assertThat(metrics.counters(), hasItem(
+        committedMetricsResult(MetricsTest.class.getName(), "count", "MyStep1", 3L)));
+    assertThat(metrics.distributions(), hasItem(
+        committedMetricsResult(MetricsTest.class.getName(), "input", "MyStep1",
+            DistributionResult.create(26L, 3L, 5L, 13L))));
+
+    assertThat(metrics.counters(), hasItem(
+        committedMetricsResult(MetricsTest.class.getName(), "count", "MyStep2", 6L)));
+    assertThat(metrics.distributions(), hasItem(
+        committedMetricsResult(MetricsTest.class.getName(), "input", "MyStep2",
+            DistributionResult.create(52L, 6L, 5L, 13L))));
+  }
+
+
+  @Category({RunnableOnService.class, UsesAttemptedMetrics.class})
+  @Test
+  public void attemptedMetricsReportToQuery() {
+    PipelineResult result = runPipelineWithMetrics();
+
+    MetricQueryResults metrics = result.metrics().queryMetrics(MetricsFilter.builder()
+        .addNameFilter(MetricNameFilter.inNamespace(MetricsTest.class))
+        .build());
+
+    // TODO: BEAM-1169: Metrics shouldn't verify the physical values tightly.
+    assertThat(metrics.counters(), hasItem(
+        attemptedMetricsResult(MetricsTest.class.getName(), "count", "MyStep1", 3L)));
+    assertThat(metrics.distributions(), hasItem(
+        attemptedMetricsResult(MetricsTest.class.getName(), "input", "MyStep1",
+            DistributionResult.create(26L, 3L, 5L, 13L))));
+
+    assertThat(metrics.counters(), hasItem(
+        attemptedMetricsResult(MetricsTest.class.getName(), "count", "MyStep2", 6L)));
+    assertThat(metrics.distributions(), hasItem(
+        attemptedMetricsResult(MetricsTest.class.getName(), "input", "MyStep2",
+            DistributionResult.create(52L, 6L, 5L, 13L))));
+  }
+
+  private PipelineResult runPipelineWithMetrics() {
+    final Counter count = Metrics.counter(MetricsTest.class, "count");
+    Pipeline pipeline = TestPipeline.create();
+    pipeline
+        .apply(Create.of(5, 8, 13))
+        .apply("MyStep1", ParDo.of(new DoFn<Integer, Integer>() {
+          @SuppressWarnings("unused")
+          @ProcessElement
+          public void processElement(ProcessContext c) {
+            Distribution values = Metrics.distribution(MetricsTest.class, "input");
+            count.inc();
+            values.update(c.element());
+
+            c.output(c.element());
+            c.output(c.element());
+          }
+        }))
+        .apply("MyStep2", ParDo.of(new DoFn<Integer, Integer>() {
+          @SuppressWarnings("unused")
+          @ProcessElement
+          public void processElement(ProcessContext c) {
+            Distribution values = Metrics.distribution(MetricsTest.class, "input");
+            count.inc();
+            values.update(c.element());
+          }
+        }));
+    PipelineResult result = pipeline.run();
+
+    result.waitUntilFinish();
+    return result;
   }
 }

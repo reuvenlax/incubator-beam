@@ -27,7 +27,10 @@ import com.google.bigtable.v2.Row;
 import com.google.bigtable.v2.RowFilter;
 import com.google.bigtable.v2.SampleRowKeysResponse;
 import com.google.cloud.bigtable.config.BigtableOptions;
+import com.google.cloud.bigtable.config.CredentialOptions;
+import com.google.cloud.bigtable.config.CredentialOptions.CredentialType;
 import com.google.cloud.bigtable.config.RetryOptions;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.FutureCallback;
@@ -49,11 +52,13 @@ import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
 import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.range.ByteKeyRange;
 import org.apache.beam.sdk.io.range.ByteKeyRangeTracker;
+import org.apache.beam.sdk.options.GcpOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.runners.PipelineRunner;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.util.ReleaseInfo;
 import org.apache.beam.sdk.values.KV;
@@ -149,7 +154,7 @@ import org.slf4j.LoggerFactory;
  */
 @Experimental
 public class BigtableIO {
-  private static final Logger logger = LoggerFactory.getLogger(BigtableIO.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BigtableIO.class);
 
   /**
    * Creates an uninitialized {@link BigtableIO.Read}. Before use, the {@code Read} must be
@@ -281,9 +286,14 @@ public class BigtableIO {
     }
 
     @Override
-    public PCollection<Row> apply(PBegin input) {
+    public PCollection<Row> expand(PBegin input) {
       BigtableSource source =
-          new BigtableSource(getBigtableService(), tableId, filter, keyRange, null);
+          new BigtableSource(new SerializableFunction<PipelineOptions, BigtableService>() {
+            @Override
+            public BigtableService apply(PipelineOptions options) {
+              return getBigtableService(options);
+            }
+          }, tableId, filter, keyRange, null);
       return input.getPipeline().apply(org.apache.beam.sdk.io.Read.from(source));
     }
 
@@ -293,9 +303,11 @@ public class BigtableIO {
       checkArgument(!tableId.isEmpty(), "Table ID not specified");
       try {
         checkArgument(
-            getBigtableService().tableExists(tableId), "Table %s does not exist", tableId);
+            getBigtableService(input.getPipeline().getOptions()).tableExists(tableId),
+            "Table %s does not exist",
+            tableId);
       } catch (IOException e) {
-        logger.warn("Error checking whether table {} exists; proceeding.", tableId, e);
+        LOG.warn("Error checking whether table {} exists; proceeding.", tableId, e);
       }
     }
 
@@ -372,12 +384,22 @@ public class BigtableIO {
      * Helper function that either returns the mock Bigtable service supplied by
      * {@link #withBigtableService} or creates and returns an implementation that talks to
      * {@code Cloud Bigtable}.
+     *
+     * <p>Also populate the credentials option from {@link GcpOptions#getGcpCredential()} if the
+     * default credentials are being used on {@link BigtableOptions}.
      */
-    private BigtableService getBigtableService() {
+    @VisibleForTesting
+    BigtableService getBigtableService(PipelineOptions pipelineOptions) {
       if (bigtableService != null) {
         return bigtableService;
       }
-      return new BigtableServiceImpl(options);
+      BigtableOptions.Builder clonedOptions = options.toBuilder();
+      if (options.getCredentialOptions().getCredentialType() == CredentialType.DefaultCredentials) {
+        clonedOptions.setCredentialOptions(
+            CredentialOptions.credential(
+                pipelineOptions.as(GcpOptions.class).getGcpCredential()));
+      }
+      return new BigtableServiceImpl(clonedOptions.build());
     }
   }
 
@@ -478,8 +500,14 @@ public class BigtableIO {
     }
 
     @Override
-    public PDone apply(PCollection<KV<ByteString, Iterable<Mutation>>> input) {
-      input.apply(ParDo.of(new BigtableWriterFn(tableId, getBigtableService())));
+    public PDone expand(PCollection<KV<ByteString, Iterable<Mutation>>> input) {
+      input.apply(ParDo.of(new BigtableWriterFn(tableId,
+          new SerializableFunction<PipelineOptions, BigtableService>() {
+        @Override
+        public BigtableService apply(PipelineOptions options) {
+          return getBigtableService(options);
+        }
+      })));
       return PDone.in(input.getPipeline());
     }
 
@@ -489,9 +517,11 @@ public class BigtableIO {
       checkArgument(!tableId.isEmpty(), "Table ID not specified");
       try {
         checkArgument(
-            getBigtableService().tableExists(tableId), "Table %s does not exist", tableId);
+            getBigtableService(input.getPipeline().getOptions()).tableExists(tableId),
+            "Table %s does not exist",
+            tableId);
       } catch (IOException e) {
-        logger.warn("Error checking whether table {} exists; proceeding.", tableId, e);
+        LOG.warn("Error checking whether table {} exists; proceeding.", tableId, e);
       }
     }
 
@@ -533,29 +563,40 @@ public class BigtableIO {
      * Helper function that either returns the mock Bigtable service supplied by
      * {@link #withBigtableService} or creates and returns an implementation that talks to
      * {@code Cloud Bigtable}.
+     *
+     * <p>Also populate the credentials option from {@link GcpOptions#getGcpCredential()} if the
+     * default credentials are being used on {@link BigtableOptions}.
      */
-    private BigtableService getBigtableService() {
+    @VisibleForTesting
+    BigtableService getBigtableService(PipelineOptions pipelineOptions) {
       if (bigtableService != null) {
         return bigtableService;
       }
-      return new BigtableServiceImpl(options);
+      BigtableOptions.Builder clonedOptions = options.toBuilder();
+      if (options.getCredentialOptions().getCredentialType() == CredentialType.DefaultCredentials) {
+        clonedOptions.setCredentialOptions(
+            CredentialOptions.credential(
+                pipelineOptions.as(GcpOptions.class).getGcpCredential()));
+      }
+      return new BigtableServiceImpl(clonedOptions.build());
     }
 
     private class BigtableWriterFn extends DoFn<KV<ByteString, Iterable<Mutation>>, Void> {
 
-      public BigtableWriterFn(String tableId, BigtableService bigtableService) {
+      public BigtableWriterFn(String tableId,
+          SerializableFunction<PipelineOptions, BigtableService> bigtableServiceFactory) {
         this.tableId = checkNotNull(tableId, "tableId");
-        this.bigtableService = checkNotNull(bigtableService, "bigtableService");
+        this.bigtableServiceFactory =
+            checkNotNull(bigtableServiceFactory, "bigtableServiceFactory");
         this.failures = new ConcurrentLinkedQueue<>();
       }
 
-      @Setup
-      public void setup() throws Exception {
-        bigtableWriter = bigtableService.openForWriting(tableId);
-      }
-
       @StartBundle
-      public void startBundle(Context c) {
+      public void startBundle(Context c) throws IOException {
+        if (bigtableWriter == null) {
+          bigtableWriter = bigtableServiceFactory.apply(
+              c.getPipelineOptions()).openForWriting(tableId);
+        }
         recordsWritten = 0;
       }
 
@@ -571,7 +612,7 @@ public class BigtableIO {
       public void finishBundle(Context c) throws Exception {
         bigtableWriter.flush();
         checkForFailures();
-        logger.info("Wrote {} records", recordsWritten);
+        LOG.info("Wrote {} records", recordsWritten);
       }
 
       @Teardown
@@ -587,7 +628,7 @@ public class BigtableIO {
 
       ///////////////////////////////////////////////////////////////////////////////
       private final String tableId;
-      private final BigtableService bigtableService;
+      private final SerializableFunction<PipelineOptions, BigtableService> bigtableServiceFactory;
       private BigtableService.Writer bigtableWriter;
       private long recordsWritten;
       private final ConcurrentLinkedQueue<BigtableWriteException> failures;
@@ -617,7 +658,7 @@ public class BigtableIO {
                 i + failures.size(),
                 i,
                 logEntry.toString());
-        logger.error(message);
+        LOG.error(message);
         throw new IOException(message);
       }
 
@@ -645,12 +686,12 @@ public class BigtableIO {
 
   static class BigtableSource extends BoundedSource<Row> {
     public BigtableSource(
-        BigtableService service,
+        SerializableFunction<PipelineOptions, BigtableService> serviceFactory,
         String tableId,
         @Nullable RowFilter filter,
         ByteKeyRange range,
         @Nullable Long estimatedSizeBytes) {
-      this.service = service;
+      this.serviceFactory = serviceFactory;
       this.tableId = tableId;
       this.filter = filter;
       this.range = range;
@@ -668,7 +709,7 @@ public class BigtableIO {
     }
 
     ////// Private state and internal implementation details //////
-    private final BigtableService service;
+    private final SerializableFunction<PipelineOptions, BigtableService> serviceFactory;
     private final String tableId;
     @Nullable private final RowFilter filter;
     private final ByteKeyRange range;
@@ -678,18 +719,18 @@ public class BigtableIO {
     protected BigtableSource withStartKey(ByteKey startKey) {
       checkNotNull(startKey, "startKey");
       return new BigtableSource(
-          service, tableId, filter, range.withStartKey(startKey), estimatedSizeBytes);
+          serviceFactory, tableId, filter, range.withStartKey(startKey), estimatedSizeBytes);
     }
 
     protected BigtableSource withEndKey(ByteKey endKey) {
       checkNotNull(endKey, "endKey");
       return new BigtableSource(
-          service, tableId, filter, range.withEndKey(endKey), estimatedSizeBytes);
+          serviceFactory, tableId, filter, range.withEndKey(endKey), estimatedSizeBytes);
     }
 
     protected BigtableSource withEstimatedSizeBytes(Long estimatedSizeBytes) {
       checkNotNull(estimatedSizeBytes, "estimatedSizeBytes");
-      return new BigtableSource(service, tableId, filter, range, estimatedSizeBytes);
+      return new BigtableSource(serviceFactory, tableId, filter, range, estimatedSizeBytes);
     }
 
     /**
@@ -697,8 +738,9 @@ public class BigtableIO {
      * boundaries and estimated sizes. We can use these samples to ensure that splits are on
      * different tablets, and possibly generate sub-splits within tablets.
      */
-    private List<SampleRowKeysResponse> getSampleRowKeys() throws IOException {
-      return service.getSampleRowKeys(this);
+    private List<SampleRowKeysResponse> getSampleRowKeys(PipelineOptions pipelineOptions)
+        throws IOException {
+      return serviceFactory.apply(pipelineOptions).getSampleRowKeys(this);
     }
 
     @Override
@@ -712,7 +754,7 @@ public class BigtableIO {
           Math.max(sizeEstimate / maximumNumberOfSplits, desiredBundleSizeBytes);
 
       // Delegate to testable helper.
-      return splitIntoBundlesBasedOnSamples(desiredBundleSizeBytes, getSampleRowKeys());
+      return splitIntoBundlesBasedOnSamples(desiredBundleSizeBytes, getSampleRowKeys(options));
     }
 
     /** Helper that splits this source into bundles based on Cloud Bigtable sampled row keys. */
@@ -720,11 +762,11 @@ public class BigtableIO {
         long desiredBundleSizeBytes, List<SampleRowKeysResponse> sampleRowKeys) {
       // There are no regions, or no samples available. Just scan the entire range.
       if (sampleRowKeys.isEmpty()) {
-        logger.info("Not splitting source {} because no sample row keys are available.", this);
+        LOG.info("Not splitting source {} because no sample row keys are available.", this);
         return Collections.singletonList(this);
       }
 
-      logger.info(
+      LOG.info(
           "About to split into bundles of size {} with sampleRowKeys length {} first element {}",
           desiredBundleSizeBytes,
           sampleRowKeys.size(),
@@ -790,7 +832,7 @@ public class BigtableIO {
       }
 
       List<BigtableSource> ret = splits.build();
-      logger.info("Generated {} splits. First split: {}", ret.size(), ret.get(0));
+      LOG.info("Generated {} splits. First split: {}", ret.size(), ret.get(0));
       return ret;
     }
 
@@ -798,7 +840,7 @@ public class BigtableIO {
     public long getEstimatedSizeBytes(PipelineOptions options) throws IOException {
       // Delegate to testable helper.
       if (estimatedSizeBytes == null) {
-        estimatedSizeBytes = getEstimatedSizeBytesBasedOnSamples(getSampleRowKeys());
+        estimatedSizeBytes = getEstimatedSizeBytesBasedOnSamples(getSampleRowKeys(options));
       }
       return estimatedSizeBytes;
     }
@@ -830,17 +872,9 @@ public class BigtableIO {
       return estimatedSizeBytes;
     }
 
-    /**
-     * Cloud Bigtable returns query results ordered by key.
-     */
-    @Override
-    public boolean producesSortedKeys(PipelineOptions options) throws Exception {
-      return true;
-    }
-
     @Override
     public BoundedReader<Row> createReader(PipelineOptions options) throws IOException {
-      return new BigtableReader(this, service);
+      return new BigtableReader(this, serviceFactory.apply(options));
     }
 
     @Override
@@ -870,7 +904,7 @@ public class BigtableIO {
     private List<BigtableSource> splitKeyRangeIntoBundleSizedSubranges(
         long sampleSizeBytes, long desiredBundleSizeBytes, ByteKeyRange range) {
       // Catch the trivial cases. Split is small enough already, or this is the last region.
-      logger.debug(
+      LOG.debug(
           "Subsplit for sampleSizeBytes {} and desiredBundleSizeBytes {}",
           sampleSizeBytes,
           desiredBundleSizeBytes);
@@ -968,7 +1002,7 @@ public class BigtableIO {
 
     @Override
     public void close() throws IOException {
-      logger.info("Closing reader after reading {} records.", recordsReturned);
+      LOG.info("Closing reader after reading {} records.", recordsReturned);
       if (reader != null) {
         reader.close();
         reader = null;
@@ -991,11 +1025,11 @@ public class BigtableIO {
       try {
         splitKey = rangeTracker.getRange().interpolateKey(fraction);
       } catch (IllegalArgumentException e) {
-        logger.info(
+        LOG.info(
             "%s: Failed to interpolate key for fraction %s.", rangeTracker.getRange(), fraction);
         return null;
       }
-      logger.debug(
+      LOG.debug(
           "Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
       BigtableSource primary = source.withEndKey(splitKey);
       BigtableSource residual = source.withStartKey(splitKey);

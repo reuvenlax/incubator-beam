@@ -121,8 +121,7 @@ import org.joda.time.Duration;
  *
  * <pre>{@code
  * PCollection<String> windowed_items = items.apply(
- *   Window.<String>into(FixedWindows.of(Duration.standardMinutes(1))
- *      .triggering(
+ *   Window.<String>into(FixedWindows.of(Duration.standardMinutes(1)))
  *      .triggering(
  *          AfterWatermark.pastEndOfWindow()
  *              .withEarlyFirings(AfterProcessingTime
@@ -220,6 +219,15 @@ public class Window {
   @Experimental(Kind.TRIGGER)
   public static <T> Bound<T> withAllowedLateness(Duration allowedLateness) {
     return new Bound(null).withAllowedLateness(allowedLateness);
+  }
+
+  /**
+   * <b><i>(Experimental)</i></b> Override the default {@link OutputTimeFn}, to control
+   * the output timestamp of values output from a {@link GroupByKey} operation.
+   */
+  @Experimental(Kind.OUTPUT_TIME)
+  public static <T> Bound<T> withOutputTimeFn(OutputTimeFn<?> outputTimeFn) {
+    return new Bound(null).withOutputTimeFn(outputTimeFn);
   }
 
   /**
@@ -445,7 +453,7 @@ public class Window {
     }
 
     @Override
-    public PCollection<T> apply(PCollection<T> input) {
+    public PCollection<T> expand(PCollection<T> input) {
       WindowingStrategy<?, ?> outputStrategy =
           getOutputStrategyInternal(input.getWindowingStrategy());
       return PCollection.createPrimitiveOutputInternal(
@@ -517,7 +525,7 @@ public class Window {
    */
   private static class Remerge<T> extends PTransform<PCollection<T>, PCollection<T>> {
     @Override
-    public PCollection<T> apply(PCollection<T> input) {
+    public PCollection<T> expand(PCollection<T> input) {
       WindowingStrategy<?, ?> outputWindowingStrategy = getOutputWindowing(
           input.getWindowingStrategy());
 

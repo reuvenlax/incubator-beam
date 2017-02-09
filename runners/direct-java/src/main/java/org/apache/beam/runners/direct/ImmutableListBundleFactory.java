@@ -17,6 +17,7 @@
  */
 package org.apache.beam.runners.direct;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.auto.value.AutoValue;
@@ -24,6 +25,7 @@ import com.google.common.collect.ImmutableList;
 import javax.annotation.Nullable;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
 import org.apache.beam.runners.direct.DirectRunner.UncommittedBundle;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.PCollection;
 import org.joda.time.Instant;
@@ -64,6 +66,7 @@ class ImmutableListBundleFactory implements BundleFactory {
     private final StructuralKey<?> key;
     private boolean committed = false;
     private ImmutableList.Builder<WindowedValue<T>> elements;
+    private Instant minSoFar = BoundedWindow.TIMESTAMP_MAX_VALUE;
 
     /**
      * Create a new {@link UncommittedImmutableListBundle} for the specified {@link PCollection}.
@@ -92,7 +95,15 @@ class ImmutableListBundleFactory implements BundleFactory {
           "Can't add element %s to committed bundle in PCollection %s",
           element,
           pcollection);
+      checkArgument(
+          element.getTimestamp().isBefore(BoundedWindow.TIMESTAMP_MAX_VALUE),
+          "Can't add an element past the end of time (%s), got timestamp %s",
+          BoundedWindow.TIMESTAMP_MAX_VALUE,
+          element.getTimestamp());
       elements.add(element);
+      if (element.getTimestamp().isBefore(minSoFar)) {
+        minSoFar = element.getTimestamp();
+      }
       return this;
     }
 
@@ -102,7 +113,7 @@ class ImmutableListBundleFactory implements BundleFactory {
       committed = true;
       final Iterable<WindowedValue<T>> committedElements = elements.build();
       return CommittedImmutableListBundle.create(
-          pcollection, key, committedElements, synchronizedCompletionTime);
+          pcollection, key, committedElements, minSoFar, synchronizedCompletionTime);
     }
   }
 
@@ -112,9 +123,10 @@ class ImmutableListBundleFactory implements BundleFactory {
         @Nullable PCollection<T> pcollection,
         StructuralKey<?> key,
         Iterable<WindowedValue<T>> committedElements,
+        Instant minElementTimestamp,
         Instant synchronizedCompletionTime) {
       return new AutoValue_ImmutableListBundleFactory_CommittedImmutableListBundle<>(
-          pcollection, key, committedElements, synchronizedCompletionTime);
+          pcollection, key, committedElements, minElementTimestamp, synchronizedCompletionTime);
     }
 
     @Override
@@ -123,6 +135,7 @@ class ImmutableListBundleFactory implements BundleFactory {
           getPCollection(),
           getKey(),
           ImmutableList.copyOf(elements),
+          minTimestamp(elements),
           getSynchronizedProcessingOutputWatermark());
     }
 
@@ -135,5 +148,15 @@ class ImmutableListBundleFactory implements BundleFactory {
     public boolean equals(Object obj) {
       return this == obj;
     }
+  }
+
+  private static Instant minTimestamp(Iterable<? extends WindowedValue<?>> elements) {
+    Instant minTs = BoundedWindow.TIMESTAMP_MAX_VALUE;
+    for (WindowedValue<?> element : elements) {
+      if (element.getTimestamp().isBefore(minTs)) {
+        minTs = element.getTimestamp();
+      }
+    }
+    return minTs;
   }
 }

@@ -27,20 +27,23 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.runners.PipelineRunner;
-import org.apache.beam.sdk.transforms.OldDoFn.RequiresWindowAccess;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.display.DisplayData.Builder;
 import org.apache.beam.sdk.transforms.display.HasDisplayData;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.MethodWithExtraParameters;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.OnTimerMethod;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
+import org.apache.beam.sdk.util.NameUtils;
 import org.apache.beam.sdk.util.SerializableUtils;
-import org.apache.beam.sdk.util.StringUtils;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
+import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.sdk.values.TypedPValue;
 
 /**
@@ -526,25 +529,39 @@ public class ParDo {
     return new Unbound().of(fn, displayDataForFn(fn));
   }
 
-  /**
-   * Creates a {@link ParDo} {@link PTransform} that will invoke the
-   * given {@link OldDoFn} function.
-   *
-   * <p>The resulting {@link PTransform PTransform's} types have been bound, with the
-   * input being a {@code PCollection<InputT>} and the output a
-   * {@code PCollection<OutputT>}, inferred from the types of the argument
-   * {@code OldDoFn<InputT, OutputT>}. It is ready to be applied, or further
-   * properties can be set on it first.
-   *
-   * @deprecated please port your {@link OldDoFn} to a {@link DoFn}
-   */
-  @Deprecated
-  public static <InputT, OutputT> Bound<InputT, OutputT> of(OldDoFn<InputT, OutputT> fn) {
-    return new Unbound().of(fn, displayDataForFn(fn));
-  }
-
   private static <T> DisplayData.ItemSpec<? extends Class<?>> displayDataForFn(T fn) {
     return DisplayData.item("fn", fn.getClass()).withLabel("Transform Function");
+  }
+
+  /**
+   * Perform common validations of the {@link DoFn} against the input {@link PCollection}, for
+   * example ensuring that the window type expected by the {@link DoFn} matches the window type of
+   * the {@link PCollection}.
+   */
+  private static <InputT, OutputT> void validateWindowType(
+      PCollection<? extends InputT> input, DoFn<InputT, OutputT> fn) {
+    DoFnSignature signature = DoFnSignatures.getSignature((Class) fn.getClass());
+
+    TypeDescriptor<? extends BoundedWindow> actualWindowT =
+        input.getWindowingStrategy().getWindowFn().getWindowTypeDescriptor();
+
+    validateWindowTypeForMethod(actualWindowT, signature.processElement());
+    for (OnTimerMethod method : signature.onTimerMethods().values()) {
+      validateWindowTypeForMethod(actualWindowT, method);
+    }
+  }
+
+  private static void validateWindowTypeForMethod(
+      TypeDescriptor<? extends BoundedWindow> actualWindowT,
+      MethodWithExtraParameters methodSignature) {
+    if (methodSignature.windowT() != null) {
+      checkArgument(
+          methodSignature.windowT().isSupertypeOf(actualWindowT),
+          "%s expects window type %s, which is not a supertype of actual window type %s",
+          methodSignature.targetMethod(),
+          methodSignature.windowT(),
+          actualWindowT);
+    }
   }
 
   /**
@@ -552,27 +569,7 @@ public class ParDo {
    * correctly and that its features can be supported.
    */
   private static <InputT, OutputT> void validate(DoFn<InputT, OutputT> fn) {
-    DoFnSignature signature = DoFnSignatures.INSTANCE.getSignature((Class) fn.getClass());
-
-    // To be removed when the features are complete and runners have their own adequate
-    // rejection logic
-    if (!signature.stateDeclarations().isEmpty()) {
-      throw new UnsupportedOperationException(
-          String.format("Found %s annotations on %s, but %s cannot yet be used with state.",
-              DoFn.StateId.class.getSimpleName(),
-              fn.getClass().getName(),
-              DoFn.class.getSimpleName()));
-    }
-
-    // To be removed when the features are complete and runners have their own adequate
-    // rejection logic
-    if (!signature.timerDeclarations().isEmpty()) {
-      throw new UnsupportedOperationException(
-          String.format("Found %s annotations on %s, but %s cannot yet be used with timers.",
-              DoFn.TimerId.class.getSimpleName(),
-              fn.getClass().getName(),
-              DoFn.class.getSimpleName()));
-    }
+    DoFnSignature signature = DoFnSignatures.getSignature((Class) fn.getClass());
 
     // State is semantically incompatible with splitting
     if (!signature.stateDeclarations().isEmpty() && signature.processElement().isSplittable()) {
@@ -589,10 +586,6 @@ public class ParDo {
     }
   }
 
-  private static <InputT, OutputT> OldDoFn<InputT, OutputT> adapt(DoFn<InputT, OutputT> fn) {
-    return DoFnAdapters.toOldDoFn(fn);
-  }
-
   /**
    * An incomplete {@link ParDo} transform, with unbound input/output types.
    *
@@ -601,15 +594,13 @@ public class ParDo {
    * bind the input/output types of this {@link PTransform}.
    */
   public static class Unbound {
-    private final String name;
     private final List<PCollectionView<?>> sideInputs;
 
     Unbound() {
-      this(null, ImmutableList.<PCollectionView<?>>of());
+      this(ImmutableList.<PCollectionView<?>>of());
     }
 
-    Unbound(String name, List<PCollectionView<?>> sideInputs) {
-      this.name = name;
+    Unbound(List<PCollectionView<?>> sideInputs) {
       this.sideInputs = sideInputs;
     }
 
@@ -639,7 +630,7 @@ public class ParDo {
       ImmutableList.Builder<PCollectionView<?>> builder = ImmutableList.builder();
       builder.addAll(this.sideInputs);
       builder.addAll(sideInputs);
-      return new Unbound(name, builder.build());
+      return new Unbound(builder.build());
     }
 
     /**
@@ -665,27 +656,12 @@ public class ParDo {
      */
     public <OutputT> UnboundMulti<OutputT> withOutputTags(
         TupleTag<OutputT> mainOutputTag, TupleTagList sideOutputTags) {
-      return new UnboundMulti<>(name, sideInputs, mainOutputTag, sideOutputTags);
-    }
-
-    /**
-     * Returns a new {@link ParDo} {@link PTransform} that's like this
-     * transform but that will invoke the given {@link OldDoFn}
-     * function, and that has its input and output types bound. Does
-     * not modify this transform. The resulting {@link PTransform} is
-     * sufficiently specified to be applied, but more properties can
-     * still be specified.
-     *
-     * @deprecated please port your {@link OldDoFn} to a {@link DoFn}
-     */
-    @Deprecated
-    public <InputT, OutputT> Bound<InputT, OutputT> of(OldDoFn<InputT, OutputT> oldFn) {
-      return of(oldFn, displayDataForFn(oldFn));
+      return new UnboundMulti<>(sideInputs, mainOutputTag, sideOutputTags);
     }
 
     private <InputT, OutputT> Bound<InputT, OutputT> of(
-        Serializable originalFn, DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
-      return new Bound<>(name, originalFn, sideInputs, fnDisplayData);
+        DoFn<InputT, OutputT> doFn, DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
+      return new Bound<>(doFn, sideInputs, fnDisplayData);
     }
   }
 
@@ -703,17 +679,14 @@ public class ParDo {
    */
   public static class Bound<InputT, OutputT>
       extends PTransform<PCollection<? extends InputT>, PCollection<OutputT>> {
-    // Inherits name.
     private final List<PCollectionView<?>> sideInputs;
-    private final Serializable fn;
+    private final DoFn<InputT, OutputT> fn;
     private final DisplayData.ItemSpec<? extends Class<?>> fnDisplayData;
 
     Bound(
-        String name,
-        Serializable fn,
+        DoFn<InputT, OutputT> fn,
         List<PCollectionView<?>> sideInputs,
         DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
-      super(name);
       this.fn = SerializableUtils.clone(fn);
       this.fnDisplayData = fnDisplayData;
       this.sideInputs = sideInputs;
@@ -742,7 +715,6 @@ public class ParDo {
     public Bound<InputT, OutputT> withSideInputs(
         Iterable<? extends PCollectionView<?>> sideInputs) {
       return new Bound<>(
-          name,
           fn,
           ImmutableList.<PCollectionView<?>>builder()
               .addAll(this.sideInputs)
@@ -761,18 +733,21 @@ public class ParDo {
      */
     public BoundMulti<InputT, OutputT> withOutputTags(
         TupleTag<OutputT> mainOutputTag, TupleTagList sideOutputTags) {
-      return new BoundMulti<>(name, fn, sideInputs, mainOutputTag, sideOutputTags, fnDisplayData);
+      return new BoundMulti<>(fn, sideInputs, mainOutputTag, sideOutputTags, fnDisplayData);
     }
 
     @Override
-    public PCollection<OutputT> apply(PCollection<? extends InputT> input) {
+    public PCollection<OutputT> expand(PCollection<? extends InputT> input) {
       checkArgument(
-          !isSplittable(getOldFn()), "Splittable DoFn not supported by the current runner");
+          !isSplittable(getFn()),
+          "%s does not support Splittable DoFn",
+          input.getPipeline().getOptions().getRunner().getName());
+      validateWindowType(input, fn);
       return PCollection.<OutputT>createPrimitiveOutputInternal(
               input.getPipeline(),
               input.getWindowingStrategy(),
               input.isBounded())
-          .setTypeDescriptorInternal(getOldFn().getOutputTypeDescriptor());
+          .setTypeDescriptor(getFn().getOutputTypeDescriptor());
     }
 
     @Override
@@ -780,19 +755,14 @@ public class ParDo {
     protected Coder<OutputT> getDefaultOutputCoder(PCollection<? extends InputT> input)
         throws CannotProvideCoderException {
       return input.getPipeline().getCoderRegistry().getDefaultCoder(
-          getOldFn().getOutputTypeDescriptor(),
-          getOldFn().getInputTypeDescriptor(),
+          getFn().getOutputTypeDescriptor(),
+          getFn().getInputTypeDescriptor(),
           ((PCollection<InputT>) input).getCoder());
     }
 
     @Override
     protected String getKindString() {
-      Class<?> clazz = DoFnAdapters.getDoFnClass(getOldFn());
-      if (clazz.isAnonymousClass()) {
-        return "AnonymousParDo";
-      } else {
-        return String.format("ParDo(%s)", StringUtils.approximateSimpleName(clazz));
-      }
+      return String.format("ParDo(%s)", NameUtils.approximateSimpleName(getFn()));
     }
 
     /**
@@ -808,44 +778,7 @@ public class ParDo {
       ParDo.populateDisplayData(builder, (HasDisplayData) fn, fnDisplayData);
     }
 
-    /**
-     * @deprecated this method to be converted to return {@link DoFn}. If you want to receive
-     * an {@link OldDoFn} you should (temporarily) use {@link #getOldFn}.
-     */
-    @Deprecated
-    public OldDoFn<InputT, OutputT> getFn() {
-      return getOldFn();
-    }
-
-    /**
-     * @deprecated please migrate to {@link #getNewFn} until {@link #getFn} is migrated to return
-     * a {@link DoFn}.
-     */
-    @Deprecated
-    public OldDoFn<InputT, OutputT> getOldFn() {
-      if (fn instanceof OldDoFn) {
-        return (OldDoFn<InputT, OutputT>) fn;
-      } else {
-        return adapt((DoFn<InputT, OutputT>) fn);
-      }
-    }
-
-    public DoFn<InputT, OutputT> getNewFn() {
-      if (fn instanceof DoFn) {
-        return (DoFn<InputT, OutputT>) fn;
-      } else {
-        return ((OldDoFn<InputT, OutputT>) fn).toDoFn();
-      }
-    }
-
-    /**
-     * Returns the {@link OldDoFn} or {@link DoFn} used to create this transform.
-     *
-     * @deprecated for migration purposes only. There are some cases of {@link OldDoFn} that are not
-     *     fully supported by wrapping it into a {@link DoFn}, such as {@link RequiresWindowAccess}.
-     */
-    @Deprecated
-    public Object getOriginalFn() {
+    public DoFn<InputT, OutputT> getFn() {
       return fn;
     }
 
@@ -865,16 +798,13 @@ public class ParDo {
    * @param <OutputT> the type of the main output {@code PCollection} elements
    */
   public static class UnboundMulti<OutputT> {
-    private final String name;
     private final List<PCollectionView<?>> sideInputs;
     private final TupleTag<OutputT> mainOutputTag;
     private final TupleTagList sideOutputTags;
 
-    UnboundMulti(String name,
-                 List<PCollectionView<?>> sideInputs,
+    UnboundMulti(List<PCollectionView<?>> sideInputs,
                  TupleTag<OutputT> mainOutputTag,
                  TupleTagList sideOutputTags) {
-      this.name = name;
       this.sideInputs = sideInputs;
       this.mainOutputTag = mainOutputTag;
       this.sideOutputTags = sideOutputTags;
@@ -906,7 +836,6 @@ public class ParDo {
     public UnboundMulti<OutputT> withSideInputs(
         Iterable<? extends PCollectionView<?>> sideInputs) {
       return new UnboundMulti<>(
-          name,
           ImmutableList.<PCollectionView<?>>builder()
               .addAll(this.sideInputs)
               .addAll(sideInputs)
@@ -928,24 +857,9 @@ public class ParDo {
       return of(fn, displayDataForFn(fn));
     }
 
-    /**
-     * Returns a new multi-output {@link ParDo} {@link PTransform}
-     * that's like this transform but that will invoke the given
-     * {@link OldDoFn} function, and that has its input type bound.
-     * Does not modify this transform. The resulting
-     * {@link PTransform} is sufficiently specified to be applied, but
-     * more properties can still be specified.
-     *
-     * @deprecated please port your {@link OldDoFn} to a {@link DoFn}
-     */
-    @Deprecated
-    public <InputT> BoundMulti<InputT, OutputT> of(OldDoFn<InputT, OutputT> fn) {
-      return of(fn, displayDataForFn(fn));
-    }
-
     private <InputT> BoundMulti<InputT, OutputT> of(
-        Serializable fn, DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
-      return new BoundMulti<>(name, fn, sideInputs, mainOutputTag, sideOutputTags, fnDisplayData);
+        DoFn<InputT, OutputT> fn, DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
+      return new BoundMulti<>(fn, sideInputs, mainOutputTag, sideOutputTags, fnDisplayData);
     }
   }
 
@@ -962,21 +876,18 @@ public class ParDo {
    */
   public static class BoundMulti<InputT, OutputT>
       extends PTransform<PCollection<? extends InputT>, PCollectionTuple> {
-    // Inherits name.
     private final List<PCollectionView<?>> sideInputs;
     private final TupleTag<OutputT> mainOutputTag;
     private final TupleTagList sideOutputTags;
     private final DisplayData.ItemSpec<? extends Class<?>> fnDisplayData;
-    private final Serializable fn;
+    private final DoFn<InputT, OutputT> fn;
 
     BoundMulti(
-        String name,
-        Serializable fn,
+        DoFn<InputT, OutputT> fn,
         List<PCollectionView<?>> sideInputs,
         TupleTag<OutputT> mainOutputTag,
         TupleTagList sideOutputTags,
         DisplayData.ItemSpec<? extends Class<?>> fnDisplayData) {
-      super(name);
       this.sideInputs = sideInputs;
       this.mainOutputTag = mainOutputTag;
       this.sideOutputTags = sideOutputTags;
@@ -1008,7 +919,6 @@ public class ParDo {
     public BoundMulti<InputT, OutputT> withSideInputs(
         Iterable<? extends PCollectionView<?>> sideInputs) {
       return new BoundMulti<>(
-          name,
           fn,
           ImmutableList.<PCollectionView<?>>builder()
               .addAll(this.sideInputs)
@@ -1021,10 +931,12 @@ public class ParDo {
 
 
     @Override
-    public PCollectionTuple apply(PCollection<? extends InputT> input) {
+    public PCollectionTuple expand(PCollection<? extends InputT> input) {
       checkArgument(
-          !isSplittable(getOldFn()), "Splittable DoFn not supported by the current runner");
-
+          !isSplittable(getFn()),
+          "%s does not support Splittable DoFn",
+          input.getPipeline().getOptions().getRunner().getName());
+      validateWindowType(input, fn);
       PCollectionTuple outputs = PCollectionTuple.ofPrimitiveOutputsInternal(
           input.getPipeline(),
           TupleTagList.of(mainOutputTag).and(sideOutputTags.getAll()),
@@ -1034,7 +946,7 @@ public class ParDo {
       // The fn will likely be an instance of an anonymous subclass
       // such as DoFn<Integer, String> { }, thus will have a high-fidelity
       // TypeDescriptor for the output type.
-      outputs.get(mainOutputTag).setTypeDescriptorInternal(getOldFn().getOutputTypeDescriptor());
+      outputs.get(mainOutputTag).setTypeDescriptor(getFn().getOutputTypeDescriptor());
 
       return outputs;
     }
@@ -1053,54 +965,23 @@ public class ParDo {
       Coder<InputT> inputCoder = ((PCollection<InputT>) input).getCoder();
       return input.getPipeline().getCoderRegistry().getDefaultCoder(
           output.getTypeDescriptor(),
-          getOldFn().getInputTypeDescriptor(),
+          getFn().getInputTypeDescriptor(),
           inputCoder);
       }
 
     @Override
     protected String getKindString() {
-      Class<?> clazz = DoFnAdapters.getDoFnClass(getOldFn());
-      if (clazz.isAnonymousClass()) {
-        return "AnonymousParMultiDo";
-      } else {
-        return String.format("ParMultiDo(%s)", StringUtils.approximateSimpleName(clazz));
-      }
+      return String.format("ParMultiDo(%s)", NameUtils.approximateSimpleName(getFn()));
     }
 
     @Override
     public void populateDisplayData(Builder builder) {
       super.populateDisplayData(builder);
-      ParDo.populateDisplayData(builder, (HasDisplayData) fn, fnDisplayData);
+      ParDo.populateDisplayData(builder, fn, fnDisplayData);
     }
 
-    /**
-     * @deprecated this method to be converted to return {@link DoFn}. If you want to receive
-     * an {@link OldDoFn} you should (temporarily) use {@link #getOldFn}.
-     */
-    @Deprecated
-    public OldDoFn<InputT, OutputT> getFn() {
-      return getOldFn();
-    }
-
-    /**
-     * @deprecated please migrate to {@link #getNewFn} until {@link #getFn} is migrated to return
-     * a {@link DoFn}.
-     */
-    @Deprecated
-    public OldDoFn<InputT, OutputT> getOldFn() {
-      if (fn instanceof OldDoFn) {
-        return (OldDoFn<InputT, OutputT>) fn;
-      } else {
-        return adapt((DoFn<InputT, OutputT>) fn);
-      }
-    }
-
-    public DoFn<InputT, OutputT> getNewFn() {
-      if (fn instanceof DoFn) {
-        return (DoFn<InputT, OutputT>) fn;
-      } else {
-        return ((OldDoFn<InputT, OutputT>) fn).toDoFn();
-      }
+    public DoFn<InputT, OutputT> getFn() {
+      return fn;
     }
 
     public TupleTag<OutputT> getMainOutputTag() {
@@ -1123,14 +1004,7 @@ public class ParDo {
     builder.include("fn", fn).add(fnDisplayData);
   }
 
-  private static boolean isSplittable(OldDoFn<?, ?> oldDoFn) {
-    DoFn<?, ?> fn = DoFnAdapters.getDoFn(oldDoFn);
-    if (fn == null) {
-      return false;
-    }
-    return DoFnSignatures.INSTANCE
-        .getSignature(fn.getClass())
-        .processElement()
-        .isSplittable();
+  private static boolean isSplittable(DoFn<?, ?> fn) {
+    return DoFnSignatures.signatureForDoFn(fn).processElement().isSplittable();
   }
 }

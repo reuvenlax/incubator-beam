@@ -22,6 +22,7 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.SetMultimap;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
+import org.apache.beam.runners.direct.DirectRunner.Enforcement;
 import org.apache.beam.runners.direct.DirectRunner.UncommittedBundle;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
@@ -45,17 +46,20 @@ import org.joda.time.Instant;
  */
 class ImmutabilityCheckingBundleFactory implements BundleFactory {
   /**
-   * Create a new {@link ImmutabilityCheckingBundleFactory} that uses the underlying
-   * {@link BundleFactory} to create the output bundle.
+   * Create a new {@link ImmutabilityCheckingBundleFactory} that uses the underlying {@link
+   * BundleFactory} to create the output bundle.
    */
-  public static ImmutabilityCheckingBundleFactory create(BundleFactory underlying) {
-    return new ImmutabilityCheckingBundleFactory(underlying);
+  public static ImmutabilityCheckingBundleFactory create(
+      BundleFactory underlying, DirectGraph graph) {
+    return new ImmutabilityCheckingBundleFactory(underlying, graph);
   }
 
   private final BundleFactory underlying;
+  private final DirectGraph graph;
 
-  private ImmutabilityCheckingBundleFactory(BundleFactory underlying) {
+  private ImmutabilityCheckingBundleFactory(BundleFactory underlying, DirectGraph graph) {
     this.underlying = checkNotNull(underlying);
+    this.graph = graph;
   }
 
   /**
@@ -71,16 +75,22 @@ class ImmutabilityCheckingBundleFactory implements BundleFactory {
 
   @Override
   public <T> UncommittedBundle<T> createBundle(PCollection<T> output) {
-    return new ImmutabilityEnforcingBundle<>(underlying.createBundle(output));
+    if (Enforcement.IMMUTABILITY.appliesTo(output, graph)) {
+      return new ImmutabilityEnforcingBundle<>(underlying.createBundle(output));
+    }
+    return underlying.createBundle(output);
   }
 
   @Override
   public <K, T> UncommittedBundle<T> createKeyedBundle(
       StructuralKey<K> key, PCollection<T> output) {
-    return new ImmutabilityEnforcingBundle<>(underlying.createKeyedBundle(key, output));
+    if (Enforcement.IMMUTABILITY.appliesTo(output, graph)) {
+      return new ImmutabilityEnforcingBundle<>(underlying.createKeyedBundle(key, output));
+    }
+    return underlying.createKeyedBundle(key, output);
   }
 
-  private static class ImmutabilityEnforcingBundle<T> implements UncommittedBundle<T> {
+  private class ImmutabilityEnforcingBundle<T> implements UncommittedBundle<T> {
     private final UncommittedBundle<T> underlying;
     private final SetMultimap<WindowedValue<T>, MutationDetector> mutationDetectors;
     private Coder<T> coder;
@@ -118,7 +128,7 @@ class ImmutabilityCheckingBundleFactory implements BundleFactory {
                 String.format(
                     "PTransform %s mutated value %s after it was output (new value was %s)."
                         + " Values must not be mutated in any way after being output.",
-                    underlying.getPCollection().getProducingTransformInternal().getFullName(),
+                    graph.getProducer(underlying.getPCollection()).getFullName(),
                     exn.getSavedValue(),
                     exn.getNewValue()),
                 exn.getSavedValue(),

@@ -56,9 +56,9 @@ class DoFnLifecycleManager {
     thrownOnTeardown = new ConcurrentHashMap<>();
   }
 
-  public DoFn<?, ?> get() throws Exception {
+  public <InputT, OutputT> DoFn<InputT, OutputT> get() throws Exception {
     Thread currentThread = Thread.currentThread();
-    return outstanding.get(currentThread);
+    return (DoFn<InputT, OutputT>) outstanding.get(currentThread);
   }
 
   public void remove() throws Exception {
@@ -99,7 +99,7 @@ class DoFnLifecycleManager {
     public DoFn<?, ?> load(Thread key) throws Exception {
       DoFn<?, ?> fn = (DoFn<?, ?>) SerializableUtils.deserializeFromByteArray(original,
           "DoFn Copy in thread " + key.getName());
-      DoFnInvokers.INSTANCE.invokerFor(fn).invokeSetup();
+      DoFnInvokers.invokerFor(fn).invokeSetup();
       return fn;
     }
   }
@@ -108,7 +108,7 @@ class DoFnLifecycleManager {
     @Override
     public void onRemoval(RemovalNotification<Thread, DoFn<?, ?>> notification) {
       try {
-        DoFnInvokers.INSTANCE.newByteBuddyInvoker(notification.getValue()).invokeTeardown();
+        DoFnInvokers.invokerFor(notification.getValue()).invokeTeardown();
       } catch (Exception e) {
         thrownOnTeardown.put(notification.getKey(), e);
       }

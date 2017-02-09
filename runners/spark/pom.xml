@@ -22,7 +22,7 @@
   <parent>
     <groupId>org.apache.beam</groupId>
     <artifactId>beam-runners-parent</artifactId>
-    <version>0.4.0-incubating-SNAPSHOT</version>
+    <version>0.6.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -34,9 +34,10 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <spark.version>1.6.2</spark.version>
+    <spark.version>1.6.3</spark.version>
     <hadoop.version>2.2.0</hadoop.version>
     <kafka.version>0.9.0.1</kafka.version>
+    <jackson.version>2.4.4</jackson.version>
     <dropwizard.metrics.version>3.1.2</dropwizard.metrics.version>
   </properties>
 
@@ -54,7 +55,7 @@
     </profile>
 
     <profile>
-      <!-- This profile adds execution of RunnableOnService integration tests 
+      <!-- This profile adds execution of RunnableOnService integration tests
            against a local Spark endpoint. -->
       <id>local-runnable-on-service-tests</id>
       <activation><activeByDefault>false</activeByDefault></activation>
@@ -72,6 +73,13 @@
                 </goals>
                 <configuration>
                   <groups>org.apache.beam.sdk.testing.RunnableOnService</groups>
+                  <excludedGroups>
+                    org.apache.beam.sdk.testing.UsesStatefulParDo,
+                    org.apache.beam.sdk.testing.UsesTimersInParDo,
+                    org.apache.beam.sdk.testing.UsesSplittableParDo,
+                    org.apache.beam.sdk.testing.UsesAttemptedMetrics,
+                    org.apache.beam.sdk.testing.UsesCommittedMetrics
+                  </excludedGroups>
                   <forkCount>1</forkCount>
                   <reuseForks>false</reuseForks>
                   <failIfNoTests>true</failIfNoTests>
@@ -82,7 +90,8 @@
                     <beamTestPipelineOptions>
                       [
                         "--runner=TestSparkRunner",
-                        "--streaming=false"
+                        "--streaming=false",
+                        "--enableSparkMetricSinks=false"
                       ]
                     </beamTestPipelineOptions>
                     <beam.spark.test.reuseSparkContext>true</beam.spark.test.reuseSparkContext>
@@ -135,26 +144,8 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>de.javakaffee</groupId>
-      <artifactId>kryo-serializers</artifactId>
-      <version>0.39</version>
-      <exclusions>
-        <!-- Use Spark's Kryo -->
-        <exclusion>
-          <groupId>com.esotericsoftware</groupId>
-          <artifactId>kryo</artifactId>
-        </exclusion>
-        <!-- We only really need the serializer implementations -->
-        <exclusion>
-          <groupId>com.google.protobuf</groupId>
-          <artifactId>protobuf-java</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
       <groupId>com.google.code.findbugs</groupId>
       <artifactId>jsr305</artifactId>
-      <version>1.3.9</version>
     </dependency>
     <dependency>
       <groupId>com.google.guava</groupId>
@@ -168,14 +159,17 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
+      <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-annotations</artifactId>
+      <version>${jackson.version}</version>
     </dependency>
       <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.avro</groupId>
@@ -263,18 +257,20 @@
     <dependency>
       <groupId>org.apache.beam</groupId>
       <artifactId>beam-sdks-java-io-kafka</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
       <version>0.9.0.1</version>
+      <scope>test</scope>
     </dependency>
 
     <!-- test dependencies -->
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
-      <scope>provided</scope>
+      <scope>test</scope>
       <exclusions>
         <exclusion>
           <artifactId>hamcrest-core</artifactId>
@@ -313,6 +309,21 @@
       <artifactId>mockito-all</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- transitive test dependencies from beam-sdk-java-core -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.dataformat</groupId>
+      <artifactId>jackson-dataformat-yaml</artifactId>
+      <version>${jackson.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.beam</groupId>
+      <artifactId>beam-sdks-common-fn-api</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -333,7 +344,6 @@
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>exec-maven-plugin</artifactId>
-          <version>1.4.0</version>
           <configuration>
             <executable>java</executable>
             <classpathScope>test</classpathScope> <!-- include provided deps -->
@@ -351,7 +361,6 @@
         <plugin>
           <groupId>org.jacoco</groupId>
           <artifactId>jacoco-maven-plugin</artifactId>
-          <version>0.7.5.201505241946</version>
           <executions>
             <execution>
               <goals>
@@ -377,20 +386,23 @@
                 <goal>shade</goal>
               </goals>
               <configuration>
+                <artifactSet>
+                  <includes>
+                    <include>com.google.guava:guava</include>
+                  </includes>
+                </artifactSet>
                 <relocations>
                   <!-- relocate Guava used by Beam (v18) since it conflicts with
                     version used by Hadoop (v11) -->
                   <relocation>
                     <pattern>com.google.common</pattern>
-                    <shadedPattern>org.apache.beam.spark.relocated.com.google.common</shadedPattern>
+                    <shadedPattern>org.apache.beam.spark.repackaged.com.google.common</shadedPattern>
                   </relocation>
                   <relocation>
                     <pattern>com.google.thirdparty</pattern>
-                    <shadedPattern>org.apache.beam.spark.relocated.com.google.thirdparty</shadedPattern>
+                    <shadedPattern>org.apache.beam.spark.repackaged.com.google.thirdparty</shadedPattern>
                   </relocation>
                 </relocations>
-                <shadedArtifactAttached>true</shadedArtifactAttached>
-                <shadedClassifierName>spark-app</shadedClassifierName>
                 <transformers>
                   <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
                 </transformers>
@@ -408,10 +420,6 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-source-plugin</artifactId>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

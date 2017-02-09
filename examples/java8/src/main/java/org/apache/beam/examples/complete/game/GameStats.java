@@ -24,6 +24,7 @@ import org.apache.beam.examples.common.ExampleUtils;
 import org.apache.beam.examples.complete.game.utils.WriteWindowedToBigQuery;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.PubsubIO;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
@@ -110,7 +111,7 @@ public class GameStats extends LeaderBoard {
     private static final double SCORE_WEIGHT = 2.5;
 
     @Override
-    public PCollection<KV<String, Integer>> apply(PCollection<KV<String, Integer>> userScores) {
+    public PCollection<KV<String, Integer>> expand(PCollection<KV<String, Integer>> userScores) {
 
       // Get the sum of scores for each user.
       PCollection<KV<String, Integer>> sumScores = userScores
@@ -127,7 +128,7 @@ public class GameStats extends LeaderBoard {
               .withSideInputs(globalMeanScore)
               .of(new DoFn<KV<String, Integer>, KV<String, Integer>>() {
                 private final Aggregator<Long, Long> numSpammerUsers =
-                  createAggregator("SpammerUsers", new Sum.SumLongFn());
+                  createAggregator("SpammerUsers", Sum.ofLongs());
                 @ProcessElement
                 public void processElement(ProcessContext c) {
                   Integer score = c.element().getValue();
@@ -181,8 +182,8 @@ public class GameStats extends LeaderBoard {
 
     @Description("Prefix used for the BigQuery table names")
     @Default.String("game_stats")
-    String getTablePrefix();
-    void setTablePrefix(String value);
+    String getGameStatsTablePrefix();
+    void setGameStatsTablePrefix(String value);
   }
 
 
@@ -252,7 +253,9 @@ public class GameStats extends LeaderBoard {
 
     // Read Events from Pub/Sub using custom timestamps
     PCollection<GameActionInfo> rawEvents = pipeline
-        .apply(PubsubIO.Read.timestampLabel(TIMESTAMP_ATTRIBUTE).topic(options.getTopic()))
+        .apply(PubsubIO.<String>read()
+            .timestampLabel(TIMESTAMP_ATTRIBUTE).topic(options.getTopic())
+            .withCoder(StringUtf8Coder.of()))
         .apply("ParseGameEvent", ParDo.of(new ParseEventFn()));
 
     // Extract username/score pairs from the event stream
@@ -301,7 +304,7 @@ public class GameStats extends LeaderBoard {
       // Write the result to BigQuery
       .apply("WriteTeamSums",
           new WriteWindowedToBigQuery<KV<String, Integer>>(
-              options.getTablePrefix() + "_team", configureWindowedWrite()));
+              options.getGameStatsTablePrefix() + "_team", configureWindowedWrite()));
 
 
     // [START DocInclude_SessionCalc]
@@ -328,7 +331,7 @@ public class GameStats extends LeaderBoard {
       // Write this info to a BigQuery table.
       .apply("WriteAvgSessionLength",
              new WriteWindowedToBigQuery<Double>(
-                options.getTablePrefix() + "_sessions", configureSessionWindowWrite()));
+                options.getGameStatsTablePrefix() + "_sessions", configureSessionWindowWrite()));
     // [END DocInclude_Rewindow]
 
 

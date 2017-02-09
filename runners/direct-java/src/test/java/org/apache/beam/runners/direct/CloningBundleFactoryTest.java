@@ -28,18 +28,21 @@ import static org.junit.Assert.assertThat;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
 import org.apache.beam.runners.direct.DirectRunner.UncommittedBundle;
-import org.apache.beam.runners.direct.EncodabilityEnforcementFactoryTest.Record;
-import org.apache.beam.runners.direct.EncodabilityEnforcementFactoryTest.RecordNoDecodeCoder;
-import org.apache.beam.runners.direct.EncodabilityEnforcementFactoryTest.RecordNoEncodeCoder;
+import org.apache.beam.sdk.coders.AtomicCoder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.GroupByKey;
+import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.transforms.WithKeys;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -59,6 +62,8 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class CloningBundleFactoryTest {
   @Rule public ExpectedException thrown = ExpectedException.none();
+  @Rule public final TestPipeline p = TestPipeline.create().enableAbandonedNodeEnforcement(false);
+
   private CloningBundleFactory factory = CloningBundleFactory.create();
 
   @Test
@@ -73,7 +78,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void bundleWorkingCoderSucceedsClonesOutput() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Integer> created = p.apply(Create.of(1, 3).withCoder(VarIntCoder.of()));
     PCollection<KV<String, Integer>> kvs =
         created
@@ -98,7 +102,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void keyedBundleWorkingCoderSucceedsClonesOutput() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Integer> created = p.apply(Create.of(1, 3).withCoder(VarIntCoder.of()));
 
     PCollection<KV<String, Iterable<Integer>>> keyed =
@@ -127,7 +130,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void bundleEncodeFailsAddFails() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Record> pc = p.apply(Create.<Record>of().withCoder(new RecordNoEncodeCoder()));
     UncommittedBundle<Record> bundle = factory.createBundle(pc);
 
@@ -139,7 +141,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void bundleDecodeFailsAddFails() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Record> pc = p.apply(Create.<Record>of().withCoder(new RecordNoDecodeCoder()));
     UncommittedBundle<Record> bundle = factory.createBundle(pc);
 
@@ -151,7 +152,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void keyedBundleEncodeFailsAddFails() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Record> pc = p.apply(Create.<Record>of().withCoder(new RecordNoEncodeCoder()));
     UncommittedBundle<Record> bundle =
         factory.createKeyedBundle(StructuralKey.of("foo", StringUtf8Coder.of()), pc);
@@ -164,7 +164,6 @@ public class CloningBundleFactoryTest {
 
   @Test
   public void keyedBundleDecodeFailsAddFails() {
-    TestPipeline p = TestPipeline.create();
     PCollection<Record> pc = p.apply(Create.<Record>of().withCoder(new RecordNoDecodeCoder()));
     UncommittedBundle<Record> bundle =
         factory.createKeyedBundle(StructuralKey.of("foo", StringUtf8Coder.of()), pc);
@@ -173,5 +172,118 @@ public class CloningBundleFactoryTest {
     thrown.expectCause(isA(CoderException.class));
     thrown.expectMessage("Decode not allowed");
     bundle.add(WindowedValue.valueInGlobalWindow(new Record()));
+  }
+
+  static class Record {}
+  static class RecordNoEncodeCoder extends AtomicCoder<Record> {
+
+    @Override
+    public void encode(
+        Record value,
+        OutputStream outStream,
+        org.apache.beam.sdk.coders.Coder.Context context)
+        throws IOException {
+      throw new CoderException("Encode not allowed");
+    }
+
+    @Override
+    public Record decode(
+        InputStream inStream, org.apache.beam.sdk.coders.Coder.Context context)
+        throws IOException {
+      return null;
+    }
+  }
+
+  static class RecordNoDecodeCoder extends AtomicCoder<Record> {
+    @Override
+    public void encode(
+        Record value,
+        OutputStream outStream,
+        org.apache.beam.sdk.coders.Coder.Context context)
+        throws IOException {}
+
+    @Override
+    public Record decode(
+        InputStream inStream, org.apache.beam.sdk.coders.Coder.Context context)
+        throws IOException {
+      throw new CoderException("Decode not allowed");
+    }
+  }
+
+  private static class RecordStructuralValueCoder extends AtomicCoder<Record> {
+    @Override
+    public void encode(
+        Record value,
+        OutputStream outStream,
+        org.apache.beam.sdk.coders.Coder.Context context)
+        throws CoderException, IOException {}
+
+    @Override
+    public Record decode(
+        InputStream inStream, org.apache.beam.sdk.coders.Coder.Context context)
+        throws CoderException, IOException {
+      return new Record() {
+        @Override
+        public String toString() {
+          return "DecodedRecord";
+        }
+      };
+    }
+
+    @Override
+    public boolean consistentWithEquals() {
+      return true;
+    }
+
+    @Override
+    public Object structuralValue(Record value) {
+      return value;
+    }
+  }
+
+  private static class RecordNotConsistentWithEqualsStructuralValueCoder
+      extends AtomicCoder<Record> {
+    @Override
+    public void encode(
+        Record value,
+        OutputStream outStream,
+        org.apache.beam.sdk.coders.Coder.Context context)
+        throws CoderException, IOException {}
+
+    @Override
+    public Record decode(
+        InputStream inStream, org.apache.beam.sdk.coders.Coder.Context context)
+        throws CoderException, IOException {
+      return new Record() {
+        @Override
+        public String toString() {
+          return "DecodedRecord";
+        }
+      };
+    }
+
+    @Override
+    public boolean consistentWithEquals() {
+      return false;
+    }
+
+    @Override
+    public Object structuralValue(Record value) {
+      return value;
+    }
+  }
+
+  private static class IdentityDoFn extends DoFn<Record, Record> {
+    @ProcessElement
+    public void proc(ProcessContext ctxt) {
+      ctxt.output(ctxt.element());
+    }
+  }
+
+  private static class SimpleIdentity extends SimpleFunction<Record, Record> {
+    @Override
+    public Record apply(Record input) {
+      return input;
+    }
   }
 }

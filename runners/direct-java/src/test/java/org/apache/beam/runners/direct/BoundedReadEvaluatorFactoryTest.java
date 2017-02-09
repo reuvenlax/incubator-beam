@@ -21,6 +21,7 @@ import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.emptyIterable;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
@@ -36,15 +37,19 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CountDownLatch;
 import org.apache.beam.runners.direct.BoundedReadEvaluatorFactory.BoundedSourceShard;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
 import org.apache.beam.runners.direct.DirectRunner.UncommittedBundle;
 import org.apache.beam.sdk.coders.BigEndianLongCoder;
 import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.coders.VarLongCoder;
 import org.apache.beam.sdk.io.BoundedSource;
-import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
 import org.apache.beam.sdk.io.CountingSource;
+import org.apache.beam.sdk.io.OffsetBasedSource;
+import org.apache.beam.sdk.io.OffsetBasedSource.OffsetBasedReader;
 import org.apache.beam.sdk.io.Read;
+import org.apache.beam.sdk.io.Source;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.SourceTestUtils;
@@ -57,6 +62,7 @@ import org.apache.beam.sdk.values.PCollection;
 import org.hamcrest.Matchers;
 import org.joda.time.Instant;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -75,16 +81,22 @@ public class BoundedReadEvaluatorFactoryTest {
   private BoundedReadEvaluatorFactory factory;
   @Mock private EvaluationContext context;
   private BundleFactory bundleFactory;
+  private AppliedPTransform<?, ?, ?> longsProducer;
+
+  @Rule
+  public TestPipeline p = TestPipeline.create().enableAbandonedNodeEnforcement(false);
 
   @Before
   public void setup() {
     MockitoAnnotations.initMocks(this);
     source = CountingSource.upTo(10L);
-    TestPipeline p = TestPipeline.create();
     longs = p.apply(Read.from(source));
 
-    factory = new BoundedReadEvaluatorFactory(context);
+    factory =
+        new BoundedReadEvaluatorFactory(
+            context, Long.MAX_VALUE /* minimum size for dynamic splits */);
     bundleFactory = ImmutableListBundleFactory.create();
+    longsProducer = DirectGraphs.getProducer(longs);
   }
 
   @Test
@@ -95,15 +107,111 @@ public class BoundedReadEvaluatorFactoryTest {
 
     Collection<CommittedBundle<?>> initialInputs =
         new BoundedReadEvaluatorFactory.InputProvider(context)
-            .getInitialInputs(longs.getProducingTransformInternal(), 1);
+            .getInitialInputs(longsProducer, 1);
     List<WindowedValue<?>> outputs = new ArrayList<>();
     for (CommittedBundle<?> shardBundle : initialInputs) {
       TransformEvaluator<?> evaluator =
-          factory.forApplication(longs.getProducingTransformInternal(), null);
+          factory.forApplication(longsProducer, null);
       for (WindowedValue<?> shard : shardBundle.getElements()) {
         evaluator.processElement((WindowedValue) shard);
       }
-      TransformResult result = evaluator.finishBundle();
+      TransformResult<?> result = evaluator.finishBundle();
+      assertThat(result.getWatermarkHold(), equalTo(BoundedWindow.TIMESTAMP_MAX_VALUE));
+      assertThat(
+          Iterables.size(result.getOutputBundles()),
+          equalTo(Iterables.size(shardBundle.getElements())));
+      for (UncommittedBundle<?> output : result.getOutputBundles()) {
+        CommittedBundle<?> committed = output.commit(BoundedWindow.TIMESTAMP_MAX_VALUE);
+        for (WindowedValue<?> val : committed.getElements()) {
+          outputs.add(val);
+        }
+      }
+    }
+
+    assertThat(
+        outputs,
+        Matchers.<WindowedValue<?>>containsInAnyOrder(
+            gw(1L), gw(2L), gw(4L), gw(8L), gw(9L), gw(7L), gw(6L), gw(5L), gw(3L), gw(0L)));
+  }
+
+  @Test
+  public void boundedSourceEvaluatorProducesDynamicSplits() throws Exception {
+    BoundedReadEvaluatorFactory factory = new BoundedReadEvaluatorFactory(context, 0L);
+
+    when(context.createRootBundle()).thenReturn(bundleFactory.createRootBundle());
+    int numElements = 10;
+    Long[] elems = new Long[numElements];
+    for (int i = 0; i < numElements; i++) {
+      elems[i] = (long) i;
+    }
+    PCollection<Long> read =
+        p.apply(Read.from(new TestSource<>(VarLongCoder.of(), 5, elems)));
+    AppliedPTransform<?, ?, ?> transform = DirectGraphs.getProducer(read);
+    Collection<CommittedBundle<?>> unreadInputs =
+        new BoundedReadEvaluatorFactory.InputProvider(context).getInitialInputs(transform, 1);
+
+    Collection<WindowedValue<?>> outputs = new ArrayList<>();
+    int numIterations = 0;
+    while (!unreadInputs.isEmpty()) {
+      numIterations++;
+      UncommittedBundle<Long> outputBundle = bundleFactory.createBundle(read);
+      when(context.createBundle(read)).thenReturn(outputBundle);
+
+      Collection<CommittedBundle<?>> newUnreadInputs = new ArrayList<>();
+      for (CommittedBundle<?> shardBundle : unreadInputs) {
+        TransformEvaluator<Long> evaluator = factory.forApplication(transform, null);
+        for (WindowedValue<?> shard : shardBundle.getElements()) {
+          evaluator.processElement((WindowedValue) shard);
+        }
+        TransformResult<Long> result = evaluator.finishBundle();
+        assertThat(result.getWatermarkHold(), equalTo(BoundedWindow.TIMESTAMP_MAX_VALUE));
+        assertThat(
+            Iterables.size(result.getOutputBundles()),
+            equalTo(Iterables.size(shardBundle.getElements())));
+        for (UncommittedBundle<?> output : result.getOutputBundles()) {
+          CommittedBundle<?> committed = output.commit(BoundedWindow.TIMESTAMP_MAX_VALUE);
+          for (WindowedValue<?> val : committed.getElements()) {
+            outputs.add(val);
+          }
+        }
+        if (!Iterables.isEmpty(result.getUnprocessedElements())) {
+          newUnreadInputs.add(shardBundle.withElements((Iterable) result.getUnprocessedElements()));
+        }
+      }
+      unreadInputs = newUnreadInputs;
+    }
+
+    assertThat(numIterations, greaterThan(1));
+    WindowedValue[] expectedValues = new WindowedValue[numElements];
+    for (long i = 0L; i < numElements; i++) {
+      expectedValues[(int) i] = gw(i);
+    }
+    assertThat(outputs, Matchers.<WindowedValue<?>>containsInAnyOrder(expectedValues));
+  }
+
+  @Test
+  public void boundedSourceEvaluatorDynamicSplitsUnsplittable() throws Exception {
+    BoundedReadEvaluatorFactory factory = new BoundedReadEvaluatorFactory(context, 0L);
+
+    PCollection<Long> read =
+        p.apply(Read.from(SourceTestUtils.toUnsplittableSource(CountingSource.upTo(10L))));
+    AppliedPTransform<?, ?, ?> transform = DirectGraphs.getProducer(read);
+
+    when(context.createRootBundle()).thenReturn(bundleFactory.createRootBundle());
+    when(context.createRootBundle()).thenReturn(bundleFactory.createRootBundle());
+    Collection<CommittedBundle<?>> initialInputs =
+        new BoundedReadEvaluatorFactory.InputProvider(context).getInitialInputs(transform, 1);
+
+    UncommittedBundle<Long> outputBundle = bundleFactory.createBundle(read);
+    when(context.createBundle(read)).thenReturn(outputBundle);
+    List<WindowedValue<?>> outputs = new ArrayList<>();
+    for (CommittedBundle<?> shardBundle : initialInputs) {
+      TransformEvaluator<?> evaluator =
+          factory.forApplication(transform, null);
+      for (WindowedValue<?> shard : shardBundle.getElements()) {
+        evaluator.processElement((WindowedValue) shard);
+      }
+      TransformResult<?> result = evaluator.finishBundle();
       assertThat(result.getWatermarkHold(), equalTo(BoundedWindow.TIMESTAMP_MAX_VALUE));
       assertThat(
           Iterables.size(result.getOutputBundles()),
@@ -134,7 +242,7 @@ public class BoundedReadEvaluatorFactoryTest {
             });
     Collection<CommittedBundle<?>> initialInputs =
         new BoundedReadEvaluatorFactory.InputProvider(context)
-            .getInitialInputs(longs.getProducingTransformInternal(), 3);
+            .getInitialInputs(longsProducer, 3);
 
     assertThat(initialInputs, hasSize(allOf(greaterThanOrEqualTo(3), lessThanOrEqualTo(4))));
 
@@ -167,13 +275,13 @@ public class BoundedReadEvaluatorFactoryTest {
     CommittedBundle<BoundedSourceShard<Long>> shards = rootBundle.commit(Instant.now());
 
     TransformEvaluator<BoundedSourceShard<Long>> evaluator =
-        factory.forApplication(longs.getProducingTransformInternal(), shards);
+        factory.forApplication(longsProducer, shards);
     for (WindowedValue<BoundedSourceShard<Long>> shard : shards.getElements()) {
       UncommittedBundle<Long> outputBundle = bundleFactory.createBundle(longs);
       when(context.createBundle(longs)).thenReturn(outputBundle);
       evaluator.processElement(shard);
     }
-    TransformResult result = evaluator.finishBundle();
+    TransformResult<?> result = evaluator.finishBundle();
     assertThat(Iterables.size(result.getOutputBundles()), equalTo(splits.size()));
 
     List<WindowedValue<?>> outputElems = new ArrayList<>();
@@ -192,10 +300,8 @@ public class BoundedReadEvaluatorFactoryTest {
   @Test
   public void boundedSourceEvaluatorClosesReader() throws Exception {
     TestSource<Long> source = new TestSource<>(BigEndianLongCoder.of(), 1L, 2L, 3L);
-
-    TestPipeline p = TestPipeline.create();
     PCollection<Long> pcollection = p.apply(Read.from(source));
-    AppliedPTransform<?, ?, ?> sourceTransform = pcollection.getProducingTransformInternal();
+    AppliedPTransform<?, ?, ?> sourceTransform = DirectGraphs.getProducer(pcollection);
 
     UncommittedBundle<Long> output = bundleFactory.createBundle(pcollection);
     when(context.createBundle(pcollection)).thenReturn(output);
@@ -214,9 +320,8 @@ public class BoundedReadEvaluatorFactoryTest {
   public void boundedSourceEvaluatorNoElementsClosesReader() throws Exception {
     TestSource<Long> source = new TestSource<>(BigEndianLongCoder.of());
 
-    TestPipeline p = TestPipeline.create();
     PCollection<Long> pcollection = p.apply(Read.from(source));
-    AppliedPTransform<?, ?, ?> sourceTransform = pcollection.getProducingTransformInternal();
+    AppliedPTransform<?, ?, ?> sourceTransform = DirectGraphs.getProducer(pcollection);
 
     UncommittedBundle<Long> output = bundleFactory.createBundle(pcollection);
     when(context.createBundle(pcollection)).thenReturn(output);
@@ -231,40 +336,64 @@ public class BoundedReadEvaluatorFactoryTest {
     assertThat(TestSource.readerClosed, is(true));
   }
 
-  private static class TestSource<T> extends BoundedSource<T> {
+  @Test
+  public void cleanupShutsDownExecutor() {
+    factory.cleanup();
+    assertThat(factory.executor.isShutdown(), is(true));
+  }
+
+  private static class TestSource<T> extends OffsetBasedSource<T> {
     private static boolean readerClosed;
     private final Coder<T> coder;
     private final T[] elems;
+    private final int firstSplitIndex;
+
+    private transient CountDownLatch subrangesCompleted;
 
     public TestSource(Coder<T> coder, T... elems) {
+      this(coder, elems.length, elems);
+    }
+
+    public TestSource(Coder<T> coder, int firstSplitIndex, T... elems) {
+      super(0L, elems.length, 1L);
       this.elems = elems;
       this.coder = coder;
+      this.firstSplitIndex = firstSplitIndex;
       readerClosed = false;
+
+      subrangesCompleted = new CountDownLatch(2);
     }
 
     @Override
-    public List<? extends BoundedSource<T>> splitIntoBundles(
+    public List<? extends OffsetBasedSource<T>> splitIntoBundles(
         long desiredBundleSizeBytes, PipelineOptions options) throws Exception {
       return ImmutableList.of(this);
     }
 
     @Override
     public long getEstimatedSizeBytes(PipelineOptions options) throws Exception {
-      return 0;
-    }
-
-    @Override
-    public boolean producesSortedKeys(PipelineOptions options) throws Exception {
-      return false;
+      return elems.length;
     }
 
     @Override
     public BoundedSource.BoundedReader<T> createReader(PipelineOptions options) throws IOException {
-      return new TestReader<>(this, elems);
+      subrangesCompleted = new CountDownLatch(2);
+      return new TestReader<>(this, firstSplitIndex, subrangesCompleted);
     }
 
     @Override
     public void validate() {
+    }
+
+    @Override
+    public long getMaxEndOffset(PipelineOptions options) throws Exception {
+      return elems.length;
+    }
+
+    @Override
+    public OffsetBasedSource<T> createSourceForSubrange(long start, long end) {
+      subrangesCompleted.countDown();
+      return new TestSource<>(coder, Arrays.copyOfRange(elems, (int) start, (int) end));
     }
 
     @Override
@@ -273,30 +402,51 @@ public class BoundedReadEvaluatorFactoryTest {
     }
   }
 
-  private static class TestReader<T> extends BoundedReader<T> {
-    private final BoundedSource<T> source;
-    private final List<T> elems;
+  private static class TestReader<T> extends OffsetBasedReader<T> {
+    private final Source<T> initialSource;
+    private final int sleepIndex;
+    private final CountDownLatch dynamicallySplit;
+
     private int index;
 
-    public TestReader(BoundedSource<T> source, T... elems) {
-      this.source = source;
-      this.elems = Arrays.asList(elems);
+    TestReader(OffsetBasedSource<T> source, int sleepIndex, CountDownLatch dynamicallySplit) {
+      super(source);
+      this.initialSource = source;
+      this.sleepIndex = sleepIndex;
+      this.dynamicallySplit = dynamicallySplit;
       this.index = -1;
     }
 
     @Override
-    public BoundedSource<T> getCurrentSource() {
-      return source;
+    public TestSource<T> getCurrentSource() {
+      return (TestSource<T>) super.getCurrentSource();
     }
 
     @Override
-    public boolean start() throws IOException {
-      return advance();
+    protected long getCurrentOffset() throws NoSuchElementException {
+      return (long) index;
     }
 
     @Override
-    public boolean advance() throws IOException {
-      if (elems.size() > index + 1) {
+    public boolean startImpl() throws IOException {
+      return advanceImpl();
+    }
+
+    @Override
+    public boolean advanceImpl() throws IOException {
+      // Sleep before the sleep/split index is claimed so long as it will be claimed
+      if (index + 1 == sleepIndex && sleepIndex < getCurrentSource().elems.length) {
+        try {
+          dynamicallySplit.await();
+          while (initialSource.equals(getCurrentSource())) {
+            // Spin until the current source is updated
+          }
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IOException(e);
+        }
+      }
+      if (getCurrentSource().elems.length > index + 1) {
         index++;
         return true;
       }
@@ -305,7 +455,7 @@ public class BoundedReadEvaluatorFactoryTest {
 
     @Override
     public T getCurrent() throws NoSuchElementException {
-      return elems.get(index);
+      return getCurrentSource().elems[index];
     }
 
     @Override

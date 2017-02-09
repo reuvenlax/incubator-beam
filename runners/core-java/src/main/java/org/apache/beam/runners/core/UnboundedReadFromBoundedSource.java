@@ -19,7 +19,6 @@ package org.apache.beam.runners.core;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.apache.beam.sdk.util.StringUtils.approximateSimpleName;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -50,6 +49,7 @@ import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
+import org.apache.beam.sdk.util.NameUtils;
 import org.apache.beam.sdk.util.PropertyNames;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
@@ -88,7 +88,7 @@ public class UnboundedReadFromBoundedSource<T> extends PTransform<PBegin, PColle
   }
 
   @Override
-  public PCollection<T> apply(PBegin input) {
+  public PCollection<T> expand(PBegin input) {
     return input.getPipeline().apply(
         Read.from(new BoundedToUnboundedSourceAdapter<>(source)));
   }
@@ -100,7 +100,7 @@ public class UnboundedReadFromBoundedSource<T> extends PTransform<PBegin, PColle
 
   @Override
   public String getKindString() {
-    return "Read(" + approximateSimpleName(source.getClass()) + ")";
+    return String.format("Read(%s)", NameUtils.approximateSimpleName(source));
   }
 
   @Override
@@ -235,19 +235,17 @@ public class UnboundedReadFromBoundedSource<T> extends PTransform<PBegin, PColle
       @Override
       public void encode(Checkpoint<T> value, OutputStream outStream, Context context)
           throws CoderException, IOException {
-        Context nested = context.nested();
-        elemsCoder.encode(value.residualElements, outStream, nested);
-        sourceCoder.encode(value.residualSource, outStream, nested);
+        elemsCoder.encode(value.residualElements, outStream, context.nested());
+        sourceCoder.encode(value.residualSource, outStream, context);
       }
 
       @SuppressWarnings("unchecked")
       @Override
       public Checkpoint<T> decode(InputStream inStream, Context context)
           throws CoderException, IOException {
-        Context nested = context.nested();
         return new Checkpoint<>(
-            elemsCoder.decode(inStream, nested),
-            sourceCoder.decode(inStream, nested));
+            elemsCoder.decode(inStream, context.nested()),
+            sourceCoder.decode(inStream, context));
       }
 
       @Override
@@ -469,7 +467,8 @@ public class UnboundedReadFromBoundedSource<T> extends PTransform<PBegin, PColle
       }
 
       private boolean advance() throws IOException {
-        if (reader == null && !closed) {
+        checkArgument(!closed, "advance() call on closed %s", getClass().getName());
+        if (reader == null) {
           reader = residualSource.createReader(options);
           return reader.start();
         } else {

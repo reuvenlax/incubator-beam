@@ -240,7 +240,7 @@ public class Create<T> {
     }
 
     @Override
-    public PCollection<T> apply(PBegin input) {
+    public PCollection<T> expand(PBegin input) {
       try {
         Coder<T> coder = getDefaultOutputCoder(input);
         try {
@@ -316,11 +316,6 @@ public class Create<T> {
       @Override
       public long getEstimatedSizeBytes(PipelineOptions options) throws Exception {
         return totalSize;
-      }
-
-      @Override
-      public boolean producesSortedKeys(PipelineOptions options) throws Exception {
-        return false;
       }
 
       @Override
@@ -440,7 +435,7 @@ public class Create<T> {
     }
 
     @Override
-    public PCollection<T> apply(PBegin input) {
+    public PCollection<T> expand(PBegin input) {
       try {
         Iterable<T> rawElements =
             Iterables.transform(

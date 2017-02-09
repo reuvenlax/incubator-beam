@@ -108,7 +108,7 @@ public class BigQueryTornadoes {
   static class CountTornadoes
       extends PTransform<PCollection<TableRow>, PCollection<TableRow>> {
     @Override
-    public PCollection<TableRow> apply(PCollection<TableRow> rows) {
+    public PCollection<TableRow> expand(PCollection<TableRow> rows) {
 
       // row... => month...
       PCollection<Integer> tornadoes = rows.apply(
@@ -131,7 +131,7 @@ public class BigQueryTornadoes {
    *
    * <p>Inherits standard configuration options.
    */
-  interface Options extends PipelineOptions {
+  public interface Options extends PipelineOptions {
     @Description("Table to read from, specified as "
         + "<project_id>:<dataset_id>.<table_id>")
     @Default.String(WEATHER_SAMPLES_TABLE)

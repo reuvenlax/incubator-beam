@@ -31,7 +31,6 @@ import org.apache.beam.sdk.transforms.Combine.CombineFn;
 import org.apache.beam.sdk.transforms.Sum;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
-import org.apache.beam.sdk.util.TimerInternals;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.util.WindowingStrategy;
 import org.joda.time.Duration;
@@ -80,6 +79,9 @@ public class LateDataDroppingDoFnRunnerTest {
         createDatum(18, 18L));
     assertThat(expected, containsInAnyOrder(Iterables.toArray(actual, WindowedValue.class)));
     assertEquals(1, droppedDueToLateness.sum);
+    // Ensure that reiterating returns the same results and doesn't increment the counter again.
+    assertThat(expected, containsInAnyOrder(Iterables.toArray(actual, WindowedValue.class)));
+    assertEquals(1, droppedDueToLateness.sum);
   }
 
   private <T> WindowedValue<T> createDatum(T element, long timestampMillis) {
@@ -111,7 +113,7 @@ public class LateDataDroppingDoFnRunnerTest {
 
     @Override
     public CombineFn<Long, ?, Long> getCombineFn() {
-      return new Sum.SumLongFn();
+      return Sum.ofLongs();
     }
   }
 }

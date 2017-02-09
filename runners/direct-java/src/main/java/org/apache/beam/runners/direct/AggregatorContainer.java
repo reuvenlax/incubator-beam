@@ -27,10 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
+import org.apache.beam.runners.core.AggregatorFactory;
+import org.apache.beam.runners.core.ExecutionContext;
 import org.apache.beam.sdk.transforms.Aggregator;
-import org.apache.beam.sdk.transforms.Aggregator.AggregatorFactory;
 import org.apache.beam.sdk.transforms.Combine.CombineFn;
-import org.apache.beam.sdk.util.ExecutionContext;
 
 /**
  * AccumT container for the current values associated with {@link Aggregator Aggregators}.
@@ -43,7 +43,7 @@ public class AggregatorContainer {
     private final String name;
     private final CombineFn<InputT, AccumT, OutputT> combiner;
     @GuardedBy("this")
-    private AccumT accumulator = null;
+    private volatile AccumT accumulator = null;
     private boolean committed = false;
 
     private AggregatorInfo(

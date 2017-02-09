@@ -20,7 +20,6 @@ package org.apache.beam.sdk.util;
 
 import static com.google.common.base.Preconditions.checkState;
 
-import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.services.pubsub.Pubsub;
 import com.google.api.services.pubsub.Pubsub.Builder;
@@ -36,6 +35,8 @@ import com.google.api.services.pubsub.model.PullResponse;
 import com.google.api.services.pubsub.model.ReceivedMessage;
 import com.google.api.services.pubsub.model.Subscription;
 import com.google.api.services.pubsub.model.Topic;
+import com.google.auth.Credentials;
+import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.cloud.hadoop.util.ChainingHttpRequestInitializer;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
@@ -55,11 +56,13 @@ public class PubsubJsonClient extends PubsubClient {
 
   private static class PubsubJsonClientFactory implements PubsubClientFactory {
     private static HttpRequestInitializer chainHttpRequestInitializer(
-        Credential credential, HttpRequestInitializer httpRequestInitializer) {
+        Credentials credential, HttpRequestInitializer httpRequestInitializer) {
       if (credential == null) {
         return httpRequestInitializer;
       } else {
-        return new ChainingHttpRequestInitializer(credential, httpRequestInitializer);
+        return new ChainingHttpRequestInitializer(
+            new HttpCredentialsAdapter(credential),
+            httpRequestInitializer);
       }
     }
 
@@ -135,6 +138,8 @@ public class PubsubJsonClient extends PubsubClient {
       Map<String, String> attributes = pubsubMessage.getAttributes();
       if ((timestampLabel != null || idLabel != null) && attributes == null) {
         attributes = new TreeMap<>();
+      }
+      if (attributes != null) {
         pubsubMessage.setAttributes(attributes);
       }
 
@@ -198,7 +203,7 @@ public class PubsubJsonClient extends PubsubClient {
         recordId = pubsubMessage.getMessageId();
       }
 
-      incomingMessages.add(new IncomingMessage(elementBytes, timestampMsSinceEpoch,
+      incomingMessages.add(new IncomingMessage(elementBytes, attributes, timestampMsSinceEpoch,
                                                requestTimeMsSinceEpoch, ackId, recordId));
     }
 

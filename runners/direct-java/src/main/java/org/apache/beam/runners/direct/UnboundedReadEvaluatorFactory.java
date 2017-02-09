@@ -17,9 +17,12 @@
  */
 package org.apache.beam.runners.direct;
 
+import static com.google.common.collect.Iterables.getOnlyElement;
+
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
@@ -35,6 +38,7 @@ import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.io.UnboundedSource.CheckpointMark;
 import org.apache.beam.sdk.io.UnboundedSource.UnboundedReader;
 import org.apache.beam.sdk.transforms.AppliedPTransform;
+import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -76,8 +80,7 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
 
   private <OutputT> TransformEvaluator<?> createEvaluator(
       AppliedPTransform<PBegin, PCollection<OutputT>, Read.Unbounded<OutputT>> application) {
-    return new UnboundedReadEvaluator<>(
-        application, evaluationContext, readerReuseChance);
+    return new UnboundedReadEvaluator<>(application, evaluationContext, readerReuseChance);
   }
 
   @Override
@@ -115,7 +118,9 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
     @Override
     public void processElement(
         WindowedValue<UnboundedSourceShard<OutputT, CheckpointMarkT>> element) throws IOException {
-      UncommittedBundle<OutputT> output = evaluationContext.createBundle(transform.getOutput());
+      UncommittedBundle<OutputT> output =
+          evaluationContext.createBundle(
+              (PCollection<OutputT>) getOnlyElement(transform.getOutputs()).getValue());
       UnboundedSourceShard<OutputT, CheckpointMarkT> shard = element.getValue();
       UnboundedReader<OutputT> reader = null;
       try {
@@ -127,8 +132,9 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
           int numElements = 0;
           do {
             if (deduplicator.shouldOutput(reader.getCurrentRecordId())) {
-              output.add(WindowedValue.timestampedValueInGlobalWindow(reader.getCurrent(),
-                  reader.getCurrentTimestamp()));
+              output.add(
+                  WindowedValue.timestampedValueInGlobalWindow(
+                      reader.getCurrent(), reader.getCurrentTimestamp()));
             }
             numElements++;
           } while (numElements < ARBITRARY_MAX_ELEMENTS && reader.advance());
@@ -143,12 +149,13 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
           // If the reader had no elements available, but the shard is not done, reuse it later
           resultBuilder.addUnprocessedElements(
               Collections.<WindowedValue<?>>singleton(
-                  element.withValue(
+                  WindowedValue.timestampedValueInGlobalWindow(
                       UnboundedSourceShard.of(
                           shard.getSource(),
                           shard.getDeduplicator(),
                           reader,
-                          shard.getCheckpoint()))));
+                          shard.getCheckpoint()),
+                      reader.getWatermark())));
         }
       } catch (IOException e) {
         if (reader != null) {
@@ -162,9 +169,13 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
         throws IOException {
       UnboundedReader<OutputT> existing = shard.getExistingReader();
       if (existing == null) {
+        CheckpointMarkT checkpoint = shard.getCheckpoint();
+        if (checkpoint != null) {
+          checkpoint.finalizeCheckpoint();
+        }
         return shard
             .getSource()
-            .createReader(evaluationContext.getPipelineOptions(), shard.getCheckpoint());
+            .createReader(evaluationContext.getPipelineOptions(), checkpoint);
       } else {
         return existing;
       }
@@ -174,9 +185,6 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
         UnboundedReader<OutputT> reader, UnboundedSourceShard<OutputT, CheckpointMarkT> shard)
         throws IOException {
       if (shard.getExistingReader() == null) {
-        if (shard.getCheckpoint() != null) {
-          shard.getCheckpoint().finalizeCheckpoint();
-        }
         return reader.start();
       } else {
         return shard.getExistingReader().advance();
@@ -200,10 +208,12 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
       // If the watermark is the max value, this source may not be invoked again. Finalize after
       // committing the output.
       if (!reader.getWatermark().isBefore(BoundedWindow.TIMESTAMP_MAX_VALUE)) {
+        PCollection<OutputT> outputPc =
+            (PCollection<OutputT>) Iterables.getOnlyElement(transform.getOutputs()).getValue();
         evaluationContext.scheduleAfterOutputWouldBeProduced(
-            transform.getOutput(),
+            outputPc,
             GlobalWindow.INSTANCE,
-            transform.getOutput().getWindowingStrategy(),
+            outputPc.getWindowingStrategy(),
             new Runnable() {
               @Override
               public void run() {
@@ -227,7 +237,8 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
     }
 
     @Override
-    public TransformResult finishBundle() throws IOException {
+    public TransformResult<UnboundedSourceShard<OutputT, CheckpointMarkT>> finishBundle()
+        throws IOException {
       return resultBuilder.build();
     }
   }
@@ -249,9 +260,12 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
     }
 
     abstract UnboundedSource<T, CheckpointT> getSource();
+
     abstract UnboundedReadDeduplicator getDeduplicator();
+
     @Nullable
     abstract UnboundedReader<T> getExistingReader();
+
     @Nullable
     abstract CheckpointT getCheckpoint();
 
@@ -260,7 +274,9 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
     }
   }
 
-  static class InputProvider implements RootInputProvider {
+  static class InputProvider<OutputT>
+      implements RootInputProvider<
+          OutputT, UnboundedSourceShard<OutputT, ?>, PBegin, Unbounded<OutputT>> {
     private final EvaluationContext evaluationContext;
 
     InputProvider(EvaluationContext evaluationContext) {
@@ -268,13 +284,9 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
     }
 
     @Override
-    public Collection<CommittedBundle<?>> getInitialInputs(
-        AppliedPTransform<?, ?, ?> transform, int targetParallelism) throws Exception {
-      return createInitialSplits((AppliedPTransform) transform, targetParallelism);
-    }
-
-    private <OutputT> Collection<CommittedBundle<?>> createInitialSplits(
-        AppliedPTransform<PBegin, ?, Unbounded<OutputT>> transform, int targetParallelism)
+    public Collection<CommittedBundle<UnboundedSourceShard<OutputT, ?>>> getInitialInputs(
+        AppliedPTransform<PBegin, PCollection<OutputT>, Unbounded<OutputT>> transform,
+        int targetParallelism)
         throws Exception {
       UnboundedSource<OutputT, ?> source = transform.getTransform().getSource();
       List<? extends UnboundedSource<OutputT, ?>> splits =
@@ -284,14 +296,15 @@ class UnboundedReadEvaluatorFactory implements TransformEvaluatorFactory {
               ? UnboundedReadDeduplicator.CachedIdDeduplicator.create()
               : NeverDeduplicator.create();
 
-      ImmutableList.Builder<CommittedBundle<?>> initialShards = ImmutableList.builder();
+      ImmutableList.Builder<CommittedBundle<UnboundedSourceShard<OutputT, ?>>> initialShards =
+          ImmutableList.builder();
       for (UnboundedSource<OutputT, ?> split : splits) {
         UnboundedSourceShard<OutputT, ?> shard =
             UnboundedSourceShard.unstarted(split, deduplicator);
         initialShards.add(
             evaluationContext
-                .<UnboundedSourceShard<?, ?>>createRootBundle()
-                .add(WindowedValue.<UnboundedSourceShard<?, ?>>valueInGlobalWindow(shard))
+                .<UnboundedSourceShard<OutputT, ?>>createRootBundle()
+                .add(WindowedValue.<UnboundedSourceShard<OutputT, ?>>valueInGlobalWindow(shard))
                 .commit(BoundedWindow.TIMESTAMP_MAX_VALUE));
       }
       return initialShards.build();

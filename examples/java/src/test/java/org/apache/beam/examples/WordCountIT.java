@@ -18,7 +18,6 @@
 
 package org.apache.beam.examples;
 
-import com.google.common.base.Strings;
 import java.util.Date;
 import org.apache.beam.examples.WordCount.WordCountOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -26,6 +25,7 @@ import org.apache.beam.sdk.testing.FileChecksumMatcher;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestPipelineOptions;
 import org.apache.beam.sdk.util.IOChannelUtils;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -36,7 +36,9 @@ import org.junit.runners.JUnit4;
 @RunWith(JUnit4.class)
 public class WordCountIT {
 
-  private static final String DEFAULT_OUTPUT_CHECKSUM = "8ae94f799f97cfd1cb5e8125951b32dfb52e1f12";
+  private static final String DEFAULT_INPUT =
+      "gs://apache-beam-samples/shakespeare/winterstale-personae";
+  private static final String DEFAULT_OUTPUT_CHECKSUM = "508517575eba8d8d5a54f7f0080a00951cfe84ca";
 
   /**
    * Options for the WordCount Integration Test.
@@ -45,27 +47,25 @@ public class WordCountIT {
    * with customized input.
    */
   public interface WordCountITOptions extends TestPipelineOptions, WordCountOptions {
-    String getChecksum();
-    void setChecksum(String value);
+  }
+
+  @BeforeClass
+  public static void setUp() {
+    PipelineOptionsFactory.register(TestPipelineOptions.class);
   }
 
   @Test
   public void testE2EWordCount() throws Exception {
-    PipelineOptionsFactory.register(WordCountITOptions.class);
     WordCountITOptions options = TestPipeline.testingPipelineOptions().as(WordCountITOptions.class);
 
+    options.setInputFile(DEFAULT_INPUT);
     options.setOutput(IOChannelUtils.resolve(
         options.getTempRoot(),
         String.format("WordCountIT-%tF-%<tH-%<tM-%<tS-%<tL", new Date()),
         "output",
         "results"));
-
-    String outputChecksum =
-        Strings.isNullOrEmpty(options.getChecksum())
-            ? DEFAULT_OUTPUT_CHECKSUM
-            : options.getChecksum();
     options.setOnSuccessMatcher(
-        new FileChecksumMatcher(outputChecksum, options.getOutput() + "*"));
+        new FileChecksumMatcher(DEFAULT_OUTPUT_CHECKSUM, options.getOutput() + "*-of-*"));
 
     WordCount.main(TestPipeline.convertToArgs(options));
   }

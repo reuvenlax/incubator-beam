@@ -129,7 +129,12 @@ public class TFIDF {
     Set<URI> uris = new HashSet<>();
     if (absoluteUri.getScheme().equals("file")) {
       File directory = new File(absoluteUri);
-      for (String entry : directory.list()) {
+      String[] directoryListing = directory.list();
+      if (directoryListing == null) {
+        throw new IOException(
+            "Directory " + absoluteUri + " is not a valid path or IO Error occurred.");
+      }
+      for (String entry : directoryListing) {
         File path = new File(directory, entry);
         uris.add(path.toURI());
       }
@@ -157,7 +162,9 @@ public class TFIDF {
       extends PTransform<PBegin, PCollection<KV<URI, String>>> {
     private static final long serialVersionUID = 0;
 
-    private Iterable<URI> uris;
+    // transient because PTransform is not really meant to be serialized.
+    // see note on PTransform
+    private final transient Iterable<URI> uris;
 
     public ReadDocuments(Iterable<URI> uris) {
       this.uris = uris;
@@ -169,7 +176,7 @@ public class TFIDF {
     }
 
     @Override
-    public PCollection<KV<URI, String>> apply(PBegin input) {
+    public PCollection<KV<URI, String>> expand(PBegin input) {
       Pipeline pipeline = input.getPipeline();
 
       // Create one TextIO.Read transform for each document
@@ -212,7 +219,7 @@ public class TFIDF {
     public ComputeTfIdf() { }
 
     @Override
-    public PCollection<KV<String, KV<URI, Double>>> apply(
+    public PCollection<KV<String, KV<URI, Double>>> expand(
         PCollection<KV<URI, String>> uriToContent) {
 
       // Compute the total number of documents, and
@@ -412,7 +419,7 @@ public class TFIDF {
     }
 
     @Override
-    public PDone apply(PCollection<KV<String, KV<URI, Double>>> wordToUriAndTfIdf) {
+    public PDone expand(PCollection<KV<String, KV<URI, Double>>> wordToUriAndTfIdf) {
       return wordToUriAndTfIdf
           .apply("Format", ParDo.of(new DoFn<KV<String, KV<URI, Double>>, String>() {
             private static final long serialVersionUID = 0;

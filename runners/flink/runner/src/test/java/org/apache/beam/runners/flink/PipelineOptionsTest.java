@@ -19,6 +19,7 @@ package org.apache.beam.runners.flink;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
@@ -29,7 +30,7 @@ import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
-import org.apache.beam.sdk.transforms.OldDoFn;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
 import org.apache.beam.sdk.util.WindowedValue;
@@ -40,6 +41,7 @@ import org.apache.commons.lang.SerializationUtils;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.joda.time.Instant;
@@ -80,6 +82,17 @@ public class PipelineOptionsTest {
   }
 
   @Test
+  public void testIgnoredFieldSerialization() {
+    FlinkPipelineOptions options = PipelineOptionsFactory.as(FlinkPipelineOptions.class);
+    options.setStateBackend(new MemoryStateBackend());
+
+    FlinkPipelineOptions deserialized =
+        new SerializedPipelineOptions(options).getPipelineOptions().as(FlinkPipelineOptions.class);
+
+    assertNull(deserialized.getStateBackend());
+  }
+
+  @Test
   public void testCaching() {
     PipelineOptions deserializedOptions =
         serializedOptions.getPipelineOptions().as(PipelineOptions.class);
@@ -106,6 +119,7 @@ public class PipelineOptionsTest {
         WindowingStrategy.globalDefault(),
         new HashMap<Integer, PCollectionView<?>>(),
         Collections.<PCollectionView<?>>emptyList(),
+        null,
         null);
 
   }
@@ -125,7 +139,8 @@ public class PipelineOptionsTest {
         WindowingStrategy.globalDefault(),
         new HashMap<Integer, PCollectionView<?>>(),
         Collections.<PCollectionView<?>>emptyList(),
-        options);
+        options,
+        null);
 
     final byte[] serialized = SerializationUtils.serialize(doFnOperator);
 
@@ -151,9 +166,9 @@ public class PipelineOptionsTest {
   }
 
 
-  private static class TestDoFn extends OldDoFn<Object, Object> {
+  private static class TestDoFn extends DoFn<Object, Object> {
 
-    @Override
+    @ProcessElement
     public void processElement(ProcessContext c) throws Exception {
       Assert.assertNotNull(c.getPipelineOptions());
       Assert.assertEquals(

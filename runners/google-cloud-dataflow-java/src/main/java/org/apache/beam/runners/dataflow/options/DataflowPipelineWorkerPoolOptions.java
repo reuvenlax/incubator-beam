@@ -20,7 +20,7 @@ package org.apache.beam.runners.dataflow.options;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.util.List;
 import javax.annotation.Nullable;
-import org.apache.beam.runners.dataflow.DataflowRunner;
+import org.apache.beam.runners.dataflow.DataflowRunnerInfo;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.DefaultValueFactory;
@@ -130,9 +130,9 @@ public interface DataflowPipelineWorkerPoolOptions extends PipelineOptions {
     public String create(PipelineOptions options) {
       DataflowPipelineOptions dataflowOptions = options.as(DataflowPipelineOptions.class);
       if (dataflowOptions.isStreaming()) {
-        return DataflowRunner.STREAMING_WORKER_HARNESS_CONTAINER_IMAGE;
+        return DataflowRunnerInfo.getDataflowRunnerInfo().getStreamingWorkerHarnessContainerImage();
       } else {
-        return DataflowRunner.BATCH_WORKER_HARNESS_CONTAINER_IMAGE;
+        return DataflowRunnerInfo.getDataflowRunnerInfo().getBatchWorkerHarnessContainerImage();
       }
     }
   }
@@ -154,9 +154,9 @@ public interface DataflowPipelineWorkerPoolOptions extends PipelineOptions {
    * workers.
    *
    * <p>Default is up to the Dataflow service. Expected format is
-   * regions/REGION/subnetworks/SUBNETWORK.
-   *
-   * <p>You may also need to specify network option.
+   * regions/REGION/subnetworks/SUBNETWORK or the fully qualified subnetwork name, beginning with
+   * https://..., e.g. https://www.googleapis.com/compute/alpha/projects/PROJECT/
+   *   regions/REGION/subnetworks/SUBNETWORK
    */
   @Description("GCE subnetwork for launching workers. For more information, see the reference "
       + "documentation https://cloud.google.com/compute/docs/networking. "
@@ -191,51 +191,6 @@ public interface DataflowPipelineWorkerPoolOptions extends PipelineOptions {
   void setWorkerMachineType(String value);
 
   /**
-   * The policy for tearing down the workers spun up by the service.
-   *
-   * @deprecated Dataflow Service will only support TEARDOWN_ALWAYS policy in the future.
-   */
-  @Deprecated
-  enum TeardownPolicy {
-    /**
-     * All VMs created for a Dataflow job are deleted when the job finishes, regardless of whether
-     * it fails or succeeds.
-     */
-    TEARDOWN_ALWAYS("TEARDOWN_ALWAYS"),
-    /**
-     * All VMs created for a Dataflow job are left running when the job finishes, regardless of
-     * whether it fails or succeeds.
-     */
-    TEARDOWN_NEVER("TEARDOWN_NEVER"),
-    /**
-     * All VMs created for a Dataflow job are deleted when the job succeeds, but are left running
-     * when it fails. (This is typically used for debugging failing jobs by SSHing into the
-     * workers.)
-     */
-    TEARDOWN_ON_SUCCESS("TEARDOWN_ON_SUCCESS");
-
-    private final String teardownPolicy;
-
-    TeardownPolicy(String teardownPolicy) {
-      this.teardownPolicy = teardownPolicy;
-    }
-
-    public String getTeardownPolicyName() {
-      return this.teardownPolicy;
-    }
-  }
-
-  /**
-   * The teardown policy for the VMs.
-   *
-   * <p>If unset, the Dataflow service will choose a reasonable default.
-   */
-  @Description("The teardown policy for the VMs. If unset, the Dataflow service will "
-      + "choose a reasonable default.")
-  TeardownPolicy getTeardownPolicy();
-  void setTeardownPolicy(TeardownPolicy value);
-
-  /**
    * List of local files to make available to workers.
    *
    * <p>Files are placed on the worker's classpath.
@@ -250,15 +205,15 @@ public interface DataflowPipelineWorkerPoolOptions extends PipelineOptions {
   void setFilesToStage(List<String> value);
 
   /**
-   * Specifies what type of persistent disk should be used. The value should be a full or partial
-   * URL of a disk type resource, e.g., zones/us-central1-f/disks/pd-standard. For
-   * more information, see the
-   * <a href="https://cloud.google.com/compute/docs/reference/latest/diskTypes">API reference
-   * documentation for DiskTypes</a>.
+   * Specifies what type of persistent disk is used. The value is a full disk type resource,
+   * e.g., compute.googleapis.com/projects//zones//diskTypes/pd-ssd. For more information,
+   * see the <a href="https://cloud.google.com/compute/docs/reference/latest/diskTypes">API
+   * reference documentation for DiskTypes</a>.
    */
-  @Description("Specifies what type of persistent disk should be used. The value should be a full "
-      + "or partial URL of a disk type resource, e.g., zones/us-central1-f/disks/pd-standard. For "
-      + "more information, see the API reference documentation for DiskTypes: "
+  @Description("Specifies what type of persistent disk is used. The "
+      + "value is a full URL of a disk type resource, e.g., "
+      + "compute.googleapis.com/projects//zones//diskTypes/pd-ssd. For more "
+      + "information, see the API reference documentation for DiskTypes: "
       + "https://cloud.google.com/compute/docs/reference/latest/diskTypes")
   String getWorkerDiskType();
   void setWorkerDiskType(String value);

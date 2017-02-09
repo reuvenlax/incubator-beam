@@ -59,6 +59,7 @@ import org.apache.beam.sdk.transforms.MapElements;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SimpleFunction;
+import org.apache.beam.sdk.transforms.ToString;
 import org.apache.beam.sdk.transforms.display.DisplayData;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.Sessions;
@@ -79,6 +80,7 @@ import org.junit.runners.JUnit4;
  */
 @RunWith(JUnit4.class)
 public class WriteTest {
+  @Rule public final TestPipeline p = TestPipeline.create();
   @Rule public ExpectedException thrown = ExpectedException.none();
 
   // Static store that can be accessed within the writer
@@ -123,7 +125,7 @@ public class WriteTest {
     }
 
     @Override
-    public PCollection<T> apply(PCollection<T> input) {
+    public PCollection<T> expand(PCollection<T> input) {
       return input
           .apply(window)
           .apply(ParDo.of(new AddArbitraryKey<T>()))
@@ -294,21 +296,13 @@ public class WriteTest {
 
   @Test
   public void testWriteUnbounded() {
-    TestPipeline p = TestPipeline.create();
     PCollection<String> unbounded = p.apply(CountingInput.unbounded())
-        .apply(MapElements.via(new ToStringFn()));
+        .apply(ToString.of());
 
     TestSink sink = new TestSink();
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage("Write can only be applied to a Bounded PCollection");
     unbounded.apply(Write.to(sink));
-  }
-
-  private static class ToStringFn extends SimpleFunction<Long, String> {
-    @Override
-    public String apply(Long input) {
-      return Long.toString(input);
-    }
   }
 
   /**

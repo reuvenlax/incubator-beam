@@ -683,7 +683,7 @@ public class PipelineOptionsFactoryTest {
   @Test
   public void testAppNameIsNotOverriddenWhenPassedInViaCommandLine() {
     ApplicationNameOptions options = PipelineOptionsFactory
-        .fromArgs(new String[]{ "--appName=testAppName" })
+        .fromArgs("--appName=testAppName")
         .as(ApplicationNameOptions.class);
     assertEquals("testAppName", options.getAppName());
   }
@@ -691,7 +691,7 @@ public class PipelineOptionsFactoryTest {
   @Test
   public void testPropertyIsSetOnRegisteredPipelineOptionNotPartOfOriginalInterface() {
     PipelineOptions options = PipelineOptionsFactory
-        .fromArgs(new String[]{ "--project=testProject" })
+        .fromArgs("--project=testProject")
         .create();
     assertEquals("testProject", options.as(GcpOptions.class).getProject());
   }
@@ -752,9 +752,7 @@ public class PipelineOptionsFactoryTest {
     String[] args = new String[] {
         "--byte="};
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-        "Empty argument value is only allowed for String, String Array, and Collections"
-        + " of Strings");
+    expectedException.expectMessage(emptyStringErrorMessage());
     PipelineOptionsFactory.fromArgs(args).as(Primitives.class);
   }
 
@@ -789,6 +787,12 @@ public class PipelineOptionsFactoryTest {
     void setClassValue(Class<?> value);
     TestEnum getEnum();
     void setEnum(TestEnum value);
+    ValueProvider<String> getStringValue();
+    void setStringValue(ValueProvider<String> value);
+    ValueProvider<Long> getLongValue();
+    void setLongValue(ValueProvider<Long> value);
+    ValueProvider<TestEnum> getEnumValue();
+    void setEnumValue(ValueProvider<TestEnum> value);
   }
 
   @Test
@@ -805,7 +809,10 @@ public class PipelineOptionsFactoryTest {
         "--string=stringValue",
         "--emptyString=",
         "--classValue=" + PipelineOptionsFactoryTest.class.getName(),
-        "--enum=" + TestEnum.Value};
+        "--enum=" + TestEnum.Value,
+        "--stringValue=beam",
+        "--longValue=12389049585840",
+        "--enumValue=" + TestEnum.Value};
 
     Objects options = PipelineOptionsFactory.fromArgs(args).as(Objects.class);
     assertTrue(options.getBoolean());
@@ -820,6 +827,41 @@ public class PipelineOptionsFactoryTest {
     assertTrue(options.getEmptyString().isEmpty());
     assertEquals(PipelineOptionsFactoryTest.class, options.getClassValue());
     assertEquals(TestEnum.Value, options.getEnum());
+    assertEquals("beam", options.getStringValue().get());
+    assertEquals(Long.valueOf(12389049585840L), options.getLongValue().get());
+    assertEquals(TestEnum.Value, options.getEnumValue().get());
+  }
+
+  @Test
+  public void testStringValueProvider() {
+    String[] args = new String[] {"--stringValue=beam"};
+    String[] emptyArgs = new String[] { "--stringValue="};
+    Objects options = PipelineOptionsFactory.fromArgs(args).as(Objects.class);
+    assertEquals("beam", options.getStringValue().get());
+    options =  PipelineOptionsFactory.fromArgs(emptyArgs).as(Objects.class);
+    assertEquals("", options.getStringValue().get());
+  }
+
+  @Test
+  public void testLongValueProvider() {
+    String[] args = new String[] {"--longValue=12345678762"};
+    String[] emptyArgs = new String[] {"--longValue="};
+    Objects options = PipelineOptionsFactory.fromArgs(args).as(Objects.class);
+    assertEquals(Long.valueOf(12345678762L), options.getLongValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Objects.class);
+  }
+
+  @Test
+  public void testEnumValueProvider() {
+    String[] args = new String[] {"--enumValue=" + TestEnum.Value};
+    String[] emptyArgs = new String[] {"--enumValue="};
+    Objects options = PipelineOptionsFactory.fromArgs(args).as(Objects.class);
+    assertEquals(TestEnum.Value, options.getEnumValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Objects.class);
   }
 
   /** A test class for verifying JSON -> Object conversion. */
@@ -839,17 +881,23 @@ public class PipelineOptionsFactoryTest {
 
     ComplexType getObject();
     void setObject(ComplexType value);
+
+    ValueProvider<ComplexType> getObjectValue();
+    void setObjectValue(ValueProvider<ComplexType> value);
   }
 
   @Test
   public void testComplexTypes() {
     String[] args = new String[] {
         "--map={\"key\":\"value\",\"key2\":\"value2\"}",
-        "--object={\"key\":\"value\",\"key2\":\"value2\"}"};
+        "--object={\"key\":\"value\",\"key2\":\"value2\"}",
+        "--objectValue={\"key\":\"value\",\"key2\":\"value2\"}"};
     ComplexTypes options = PipelineOptionsFactory.fromArgs(args).as(ComplexTypes.class);
     assertEquals(ImmutableMap.of("key", "value", "key2", "value2"), options.getMap());
     assertEquals("value", options.getObject().value);
     assertEquals("value2", options.getObject().value2);
+    assertEquals("value", options.getObjectValue().get().value);
+    assertEquals("value2", options.getObjectValue().get().value2);
   }
 
   @Test
@@ -882,6 +930,12 @@ public class PipelineOptionsFactoryTest {
     void setClassValue(Class<?>[] value);
     TestEnum[] getEnum();
     void setEnum(TestEnum[] value);
+    ValueProvider<String[]> getStringValue();
+    void setStringValue(ValueProvider<String[]> value);
+    ValueProvider<Long[]> getLongValue();
+    void setLongValue(ValueProvider<Long[]> value);
+    ValueProvider<TestEnum[]> getEnumValue();
+    void setEnumValue(ValueProvider<TestEnum[]> value);
   }
 
   @Test
@@ -915,7 +969,13 @@ public class PipelineOptionsFactoryTest {
         "--classValue=" + PipelineOptionsFactory.class.getName(),
         "--classValue=" + PipelineOptionsFactoryTest.class.getName(),
         "--enum=" + TestEnum.Value,
-        "--enum=" + TestEnum.Value2};
+        "--enum=" + TestEnum.Value2,
+        "--stringValue=abc",
+        "--stringValue=beam",
+        "--longValue=123890123890",
+        "--longValue=123890123891",
+        "--enumValue=" + TestEnum.Value,
+        "--enumValue=" + TestEnum.Value2};
 
     Arrays options = PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
     boolean[] bools = options.getBoolean();
@@ -932,6 +992,10 @@ public class PipelineOptionsFactoryTest {
                                    PipelineOptionsFactoryTest.class},
         options.getClassValue());
     assertArrayEquals(new TestEnum[] {TestEnum.Value, TestEnum.Value2}, options.getEnum());
+    assertArrayEquals(new String[] {"abc", "beam"}, options.getStringValue().get());
+    assertArrayEquals(new Long[] {123890123890L, 123890123891L}, options.getLongValue().get());
+    assertArrayEquals(new TestEnum[] {TestEnum.Value, TestEnum.Value2},
+        options.getEnumValue().get());
   }
 
   @Test
@@ -961,9 +1025,7 @@ public class PipelineOptionsFactoryTest {
   @Test
   public void testEmptyInNonStringArrays() {
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-        "Empty argument value is only allowed for String, String Array, and Collections"
-        + " of Strings");
+    expectedException.expectMessage(emptyStringErrorMessage());
 
     String[] args = new String[] {
         "--boolean=true",
@@ -976,13 +1038,55 @@ public class PipelineOptionsFactoryTest {
   @Test
   public void testEmptyInNonStringArraysWithCommaList() {
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-        "Empty argument value is only allowed for String, String Array, and Collections"
-        + " of Strings");
+    expectedException.expectMessage(emptyStringErrorMessage());
 
     String[] args = new String[] {
         "--int=1,,9"};
     PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
+  }
+
+  @Test
+  public void testStringArrayValueProvider() {
+    String[] args = new String[] {"--stringValue=abc", "--stringValue=xyz"};
+    String[] commaArgs = new String[]{"--stringValue=abc,xyz"};
+    String[] emptyArgs = new String[] { "--stringValue=", "--stringValue="};
+    Arrays options = PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
+    assertArrayEquals(new String[]{"abc", "xyz"}, options.getStringValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Arrays.class);
+    assertArrayEquals(new String[]{"abc", "xyz"}, options.getStringValue().get());
+    options = PipelineOptionsFactory.fromArgs(emptyArgs).as(Arrays.class);
+    assertArrayEquals(new String[]{"", ""}, options.getStringValue().get());
+  }
+
+  @Test
+  public void testLongArrayValueProvider() {
+    String[] args = new String[] {"--longValue=12345678762", "--longValue=12345678763"};
+    String[] commaArgs = new String[] {"--longValue=12345678762,12345678763"};
+    String[] emptyArgs = new String[] {"--longValue=", "--longValue="};
+    Arrays options = PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
+    assertArrayEquals(new Long[] {12345678762L, 12345678763L}, options.getLongValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Arrays.class);
+    assertArrayEquals(new Long[] {12345678762L, 12345678763L}, options.getLongValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Arrays.class);
+  }
+
+  @Test
+  public void testEnumArrayValueProvider() {
+    String[] args = new String[] {"--enumValue=" + TestEnum.Value,
+        "--enumValue=" + TestEnum.Value2};
+    String[] commaArgs = new String[] {"--enumValue=" + TestEnum.Value + "," + TestEnum.Value2};
+    String[] emptyArgs = new String[] {"--enumValue="};
+    Arrays options = PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
+    assertArrayEquals(new TestEnum[] {TestEnum.Value, TestEnum.Value2},
+        options.getEnumValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Arrays.class);
+    assertArrayEquals(new TestEnum[] {TestEnum.Value, TestEnum.Value2},
+        options.getEnumValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Arrays.class);
   }
 
   @Test
@@ -1011,6 +1115,12 @@ public class PipelineOptionsFactoryTest {
     List getList();
     @SuppressWarnings("rawtypes")
     void setList(List value);
+    ValueProvider<List<String>> getStringValue();
+    void setStringValue(ValueProvider<List<String>> value);
+    ValueProvider<List<Long>> getLongValue();
+    void setLongValue(ValueProvider<List<Long>> value);
+    ValueProvider<List<TestEnum>> getEnumValue();
+    void setEnumValue(ValueProvider<List<TestEnum>> value);
   }
 
   @Test
@@ -1018,8 +1128,14 @@ public class PipelineOptionsFactoryTest {
     String[] manyArgs =
         new String[] {"--list=stringValue1", "--list=stringValue2", "--list=stringValue3"};
 
+    String[] manyArgsWithEmptyString =
+        new String[] {"--list=stringValue1", "--list=", "--list=stringValue3"};
+
     Lists options = PipelineOptionsFactory.fromArgs(manyArgs).as(Lists.class);
     assertEquals(ImmutableList.of("stringValue1", "stringValue2", "stringValue3"),
+        options.getList());
+    options = PipelineOptionsFactory.fromArgs(manyArgsWithEmptyString).as(Lists.class);
+    assertEquals(ImmutableList.of("stringValue1", "", "stringValue3"),
         options.getList());
   }
 
@@ -1028,6 +1144,7 @@ public class PipelineOptionsFactoryTest {
     String[] manyArgs =
         new String[] {"--string=stringValue1", "--string=stringValue2", "--string=stringValue3"};
     String[] oneArg = new String[] {"--string=stringValue1"};
+    String[] emptyArg = new String[] {"--string="};
 
     Lists options = PipelineOptionsFactory.fromArgs(manyArgs).as(Lists.class);
     assertEquals(ImmutableList.of("stringValue1", "stringValue2", "stringValue3"),
@@ -1035,6 +1152,9 @@ public class PipelineOptionsFactoryTest {
 
     options = PipelineOptionsFactory.fromArgs(oneArg).as(Lists.class);
     assertEquals(ImmutableList.of("stringValue1"), options.getString());
+
+    options = PipelineOptionsFactory.fromArgs(emptyArg).as(Lists.class);
+    assertEquals(ImmutableList.of(""), options.getString());
   }
 
   @Test
@@ -1054,10 +1174,8 @@ public class PipelineOptionsFactoryTest {
     assertEquals(ImmutableList.of(1), options.getInteger());
 
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-      "Empty argument value is only allowed for String, String Array, and Collections of Strings,"
-      + " but received: java.util.List<java.lang.Integer>");
-    options = PipelineOptionsFactory.fromArgs(missingArg).as(Lists.class);
+    expectedException.expectMessage(emptyStringErrorMessage("java.util.List<java.lang.Integer>"));
+    PipelineOptionsFactory.fromArgs(missingArg).as(Lists.class);
   }
 
   @Test
@@ -1084,6 +1202,48 @@ public class PipelineOptionsFactoryTest {
     Arrays options = PipelineOptionsFactory.fromArgs(args).as(Arrays.class);
     assertArrayEquals(new char[] {'d', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o'},
                       options.getChar());
+  }
+
+  @Test
+  public void testStringListValueProvider() {
+    String[] args = new String[] {"--stringValue=abc", "--stringValue=xyz"};
+    String[] commaArgs = new String[]{"--stringValue=abc,xyz"};
+    String[] emptyArgs = new String[] { "--stringValue=", "--stringValue="};
+    Lists options = PipelineOptionsFactory.fromArgs(args).as(Lists.class);
+    assertEquals(ImmutableList.of("abc", "xyz"), options.getStringValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Lists.class);
+    assertEquals(ImmutableList.of("abc", "xyz"), options.getStringValue().get());
+    options = PipelineOptionsFactory.fromArgs(emptyArgs).as(Lists.class);
+    assertEquals(ImmutableList.of("", ""), options.getStringValue().get());
+  }
+
+  @Test
+  public void testLongListValueProvider() {
+    String[] args = new String[] {"--longValue=12345678762", "--longValue=12345678763"};
+    String[] commaArgs = new String[] {"--longValue=12345678762,12345678763"};
+    String[] emptyArgs = new String[] {"--longValue=", "--longValue="};
+    Lists options = PipelineOptionsFactory.fromArgs(args).as(Lists.class);
+    assertEquals(ImmutableList.of(12345678762L, 12345678763L), options.getLongValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Lists.class);
+    assertEquals(ImmutableList.of(12345678762L, 12345678763L), options.getLongValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Lists.class);
+  }
+
+  @Test
+  public void testEnumListValueProvider() {
+    String[] args = new String[] {"--enumValue=" + TestEnum.Value,
+        "--enumValue=" + TestEnum.Value2};
+    String[] commaArgs = new String[] {"--enumValue=" + TestEnum.Value + "," + TestEnum.Value2};
+    String[] emptyArgs = new String[] {"--enumValue="};
+    Lists options = PipelineOptionsFactory.fromArgs(args).as(Lists.class);
+    assertEquals(ImmutableList.of(TestEnum.Value, TestEnum.Value2), options.getEnumValue().get());
+    options = PipelineOptionsFactory.fromArgs(commaArgs).as(Lists.class);
+    assertEquals(ImmutableList.of(TestEnum.Value, TestEnum.Value2), options.getEnumValue().get());
+    expectedException.expect(IllegalArgumentException.class);
+    expectedException.expectMessage(emptyStringErrorMessage());
+    PipelineOptionsFactory.fromArgs(emptyArgs).as(Lists.class);
   }
 
   @Test
@@ -1127,11 +1287,9 @@ public class PipelineOptionsFactoryTest {
     assertEquals(ImmutableMap.of(1, 1), options.getMap());
 
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-      "Empty argument value is only allowed for String, String Array, and "
-      + "Collections of Strings, but received: java.util.Map<java.lang.Integer, "
-      + "java.lang.Integer>");
-    options = PipelineOptionsFactory.fromArgs(missingArg).as(Maps.class);
+    expectedException.expectMessage(emptyStringErrorMessage(
+        "java.util.Map<java.lang.Integer, java.lang.Integer>"));
+    PipelineOptionsFactory.fromArgs(missingArg).as(Maps.class);
   }
 
   @Test
@@ -1150,11 +1308,9 @@ public class PipelineOptionsFactoryTest {
                  options.getNestedMap());
 
     expectedException.expect(IllegalArgumentException.class);
-    expectedException.expectMessage(
-      "Empty argument value is only allowed for String, String Array, and Collections of "
-      + "Strings, but received: java.util.Map<java.lang.Integer, "
-      + "java.util.Map<java.lang.Integer, java.lang.Integer>>");
-    options = PipelineOptionsFactory.fromArgs(missingArg).as(Maps.class);
+    expectedException.expectMessage(emptyStringErrorMessage(
+        "java.util.Map<java.lang.Integer, java.util.Map<java.lang.Integer, java.lang.Integer>>"));
+    PipelineOptionsFactory.fromArgs(missingArg).as(Maps.class);
   }
 
   @Test
@@ -1461,38 +1617,17 @@ public class PipelineOptionsFactoryTest {
         containsString("The pipeline runner that will be used to execute the pipeline."));
   }
 
-  @Test
-  public void testFindProperClassLoaderIfContextClassLoaderIsNull() throws InterruptedException {
-    final ClassLoader[] classLoader = new ClassLoader[1];
-    Thread thread = new Thread(new Runnable() {
-
-      @Override
-      public void run() {
-        classLoader[0] = PipelineOptionsFactory.findClassLoader();
-      }
-    });
-    thread.setContextClassLoader(null);
-    thread.start();
-    thread.join();
-    assertEquals(PipelineOptionsFactory.class.getClassLoader(), classLoader[0]);
+  private String emptyStringErrorMessage() {
+    return emptyStringErrorMessage(null);
   }
-
-  @Test
-  public void testFindProperClassLoaderIfContextClassLoaderIsAvailable()
-      throws InterruptedException {
-    final ClassLoader[] classLoader = new ClassLoader[1];
-    Thread thread = new Thread(new Runnable() {
-
-      @Override
-      public void run() {
-        classLoader[0] = PipelineOptionsFactory.findClassLoader();
-      }
-    });
-    ClassLoader cl = new ClassLoader() {};
-    thread.setContextClassLoader(cl);
-    thread.start();
-    thread.join();
-    assertEquals(cl, classLoader[0]);
+  private String emptyStringErrorMessage(String type) {
+    String msg = "Empty argument value is only allowed for String, String Array, "
+        + "Collections of Strings or any of these types in a parameterized ValueProvider";
+    if (type != null) {
+      return String.format("%s, but received: %s", msg, type);
+    } else {
+      return msg;
+    }
   }
 
   private static class RegisteredTestRunner extends PipelineRunner<PipelineResult> {
@@ -1500,6 +1635,7 @@ public class PipelineOptionsFactoryTest {
       return new RegisteredTestRunner();
     }
 
+    @Override
     public PipelineResult run(Pipeline p) {
       throw new IllegalArgumentException();
     }

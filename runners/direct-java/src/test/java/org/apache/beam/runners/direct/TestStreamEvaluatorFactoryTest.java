@@ -27,19 +27,25 @@ import com.google.common.collect.Iterables;
 import java.util.Collection;
 import java.util.Collections;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
+import org.apache.beam.runners.direct.TestStreamEvaluatorFactory.DirectTestStreamFactory;
 import org.apache.beam.runners.direct.TestStreamEvaluatorFactory.TestClock;
 import org.apache.beam.runners.direct.TestStreamEvaluatorFactory.TestStreamIndex;
+import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestStream;
+import org.apache.beam.sdk.transforms.AppliedPTransform;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
+import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TaggedPValue;
 import org.apache.beam.sdk.values.TimestampedValue;
 import org.hamcrest.Matchers;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -51,6 +57,9 @@ public class TestStreamEvaluatorFactoryTest {
   private BundleFactory bundleFactory;
   private EvaluationContext context;
 
+  @Rule
+  public TestPipeline p = TestPipeline.create().enableAbandonedNodeEnforcement(false);
+
   @Before
   public void setup() {
     context = mock(EvaluationContext.class);
@@ -61,7 +70,6 @@ public class TestStreamEvaluatorFactoryTest {
   /** Demonstrates that returned evaluators produce elements in sequence. */
   @Test
   public void producesElementsInSequence() throws Exception {
-    TestPipeline p = TestPipeline.create();
     PCollection<Integer> streamVals =
         p.apply(
             TestStream.create(VarIntCoder.of())
@@ -80,17 +88,18 @@ public class TestStreamEvaluatorFactoryTest {
     when(context.createBundle(streamVals))
         .thenReturn(bundleFactory.createBundle(streamVals), bundleFactory.createBundle(streamVals));
 
+    AppliedPTransform<?, ?, ?> streamProducer = DirectGraphs.getProducer(streamVals);
     Collection<CommittedBundle<?>> initialInputs =
         new TestStreamEvaluatorFactory.InputProvider(context)
-            .getInitialInputs(streamVals.getProducingTransformInternal(), 1);
+            .getInitialInputs(streamProducer, 1);
     @SuppressWarnings("unchecked")
     CommittedBundle<TestStreamIndex<Integer>> initialBundle =
         (CommittedBundle<TestStreamIndex<Integer>>) Iterables.getOnlyElement(initialInputs);
 
     TransformEvaluator<TestStreamIndex<Integer>> firstEvaluator =
-        factory.forApplication(streamVals.getProducingTransformInternal(), initialBundle);
+        factory.forApplication(streamProducer, initialBundle);
     firstEvaluator.processElement(Iterables.getOnlyElement(initialBundle.getElements()));
-    TransformResult firstResult = firstEvaluator.finishBundle();
+    TransformResult<TestStreamIndex<Integer>> firstResult = firstEvaluator.finishBundle();
 
     WindowedValue<TestStreamIndex<Integer>> firstResidual =
         (WindowedValue<TestStreamIndex<Integer>>)
@@ -101,9 +110,9 @@ public class TestStreamEvaluatorFactoryTest {
     CommittedBundle<TestStreamIndex<Integer>> secondBundle =
         initialBundle.withElements(Collections.singleton(firstResidual));
     TransformEvaluator<TestStreamIndex<Integer>> secondEvaluator =
-        factory.forApplication(streamVals.getProducingTransformInternal(), secondBundle);
+        factory.forApplication(streamProducer, secondBundle);
     secondEvaluator.processElement(firstResidual);
-    TransformResult secondResult = secondEvaluator.finishBundle();
+    TransformResult<TestStreamIndex<Integer>> secondResult = secondEvaluator.finishBundle();
 
     WindowedValue<TestStreamIndex<Integer>> secondResidual =
         (WindowedValue<TestStreamIndex<Integer>>)
@@ -114,9 +123,9 @@ public class TestStreamEvaluatorFactoryTest {
     CommittedBundle<TestStreamIndex<Integer>> thirdBundle =
         secondBundle.withElements(Collections.singleton(secondResidual));
     TransformEvaluator<TestStreamIndex<Integer>> thirdEvaluator =
-        factory.forApplication(streamVals.getProducingTransformInternal(), thirdBundle);
+        factory.forApplication(streamProducer, thirdBundle);
     thirdEvaluator.processElement(secondResidual);
-    TransformResult thirdResult = thirdEvaluator.finishBundle();
+    TransformResult<TestStreamIndex<Integer>> thirdResult = thirdEvaluator.finishBundle();
 
     WindowedValue<TestStreamIndex<Integer>> thirdResidual =
         (WindowedValue<TestStreamIndex<Integer>>)
@@ -128,9 +137,9 @@ public class TestStreamEvaluatorFactoryTest {
     CommittedBundle<TestStreamIndex<Integer>> fourthBundle =
         thirdBundle.withElements(Collections.singleton(thirdResidual));
     TransformEvaluator<TestStreamIndex<Integer>> fourthEvaluator =
-        factory.forApplication(streamVals.getProducingTransformInternal(), fourthBundle);
+        factory.forApplication(streamProducer, fourthBundle);
     fourthEvaluator.processElement(thirdResidual);
-    TransformResult fourthResult = fourthEvaluator.finishBundle();
+    TransformResult<TestStreamIndex<Integer>> fourthResult = fourthEvaluator.finishBundle();
 
     assertThat(clock.now(), equalTo(start.plus(Duration.standardMinutes(10))));
     WindowedValue<TestStreamIndex<Integer>> fourthResidual =
@@ -142,9 +151,9 @@ public class TestStreamEvaluatorFactoryTest {
     CommittedBundle<TestStreamIndex<Integer>> fifthBundle =
         thirdBundle.withElements(Collections.singleton(fourthResidual));
     TransformEvaluator<TestStreamIndex<Integer>> fifthEvaluator =
-        factory.forApplication(streamVals.getProducingTransformInternal(), fifthBundle);
+        factory.forApplication(streamProducer, fifthBundle);
     fifthEvaluator.processElement(fourthResidual);
-    TransformResult fifthResult = fifthEvaluator.finishBundle();
+    TransformResult<TestStreamIndex<Integer>> fifthResult = fifthEvaluator.finishBundle();
 
     assertThat(
         Iterables.getOnlyElement(firstResult.getOutputBundles())
@@ -167,5 +176,12 @@ public class TestStreamEvaluatorFactoryTest {
     assertThat(fifthResult.getOutputBundles(), Matchers.emptyIterable());
     assertThat(fifthResult.getWatermarkHold(), equalTo(BoundedWindow.TIMESTAMP_MAX_VALUE));
     assertThat(fifthResult.getUnprocessedElements(), Matchers.emptyIterable());
+  }
+
+  @Test
+  public void overrideFactoryGetInputSucceeds() {
+    DirectTestStreamFactory<?> factory = new DirectTestStreamFactory<>();
+    PBegin begin = factory.getInput(Collections.<TaggedPValue>emptyList(), p);
+    assertThat(begin.getPipeline(), Matchers.<Pipeline>equalTo(p));
   }
 }

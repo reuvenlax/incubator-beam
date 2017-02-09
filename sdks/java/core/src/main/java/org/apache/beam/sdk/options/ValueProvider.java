@@ -17,7 +17,6 @@
  */
 package org.apache.beam.sdk.options;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -33,6 +32,7 @@ import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import com.fasterxml.jackson.databind.deser.ContextualDeserializer;
+import com.google.common.base.MoreObjects;
 import java.io.IOException;
 import java.io.Serializable;
 import java.lang.reflect.InvocationHandler;
@@ -50,7 +50,7 @@ import org.apache.beam.sdk.transforms.SerializableFunction;
  */
 @JsonSerialize(using = ValueProvider.Serializer.class)
 @JsonDeserialize(using = ValueProvider.Deserializer.class)
-public interface ValueProvider<T> {
+public interface ValueProvider<T> extends Serializable {
   /**
    * Return the value wrapped by this {@link ValueProvider}.
    */
@@ -91,6 +91,13 @@ public interface ValueProvider<T> {
     public boolean isAccessible() {
       return true;
     }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("value", value)
+          .toString();
+    }
   }
 
   /**
@@ -101,6 +108,7 @@ public interface ValueProvider<T> {
 
     private final ValueProvider<X> value;
     private final SerializableFunction<X, T> translator;
+    private transient volatile T cachedValue;
 
     NestedValueProvider(ValueProvider<X> value, SerializableFunction<X, T> translator) {
       this.value = checkNotNull(value);
@@ -118,12 +126,36 @@ public interface ValueProvider<T> {
 
     @Override
     public T get() {
-      return translator.apply(value.get());
+      if (cachedValue == null) {
+        cachedValue = translator.apply(value.get());
+      }
+      return cachedValue;
     }
 
     @Override
     public boolean isAccessible() {
       return value.isAccessible();
+    }
+
+    /**
+     * Returns the property name associated with this provider.
+     */
+    public String propertyName() {
+      if (value instanceof RuntimeValueProvider) {
+        return ((RuntimeValueProvider) value).propertyName();
+      } else if (value instanceof NestedValueProvider) {
+        return ((NestedValueProvider) value).propertyName();
+      } else {
+        throw new RuntimeException("Only a RuntimeValueProvider or a NestedValueProvider can supply"
+            + " a property name.");
+      }
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("value", value)
+          .toString();
     }
   }
 
@@ -193,8 +225,16 @@ public interface ValueProvider<T> {
         Method method = klass.getMethod(methodName);
         PipelineOptions methodOptions = options.as(klass);
         InvocationHandler handler = Proxy.getInvocationHandler(methodOptions);
-        T value = ((ValueProvider<T>) handler.invoke(methodOptions, method, null)).get();
-        return firstNonNull(value, defaultValue);
+        ValueProvider<T> result =
+            (ValueProvider<T>) handler.invoke(methodOptions, method, null);
+        // Two cases: If we have deserialized a new value from JSON, it will
+        // be wrapped in a StaticValueProvider, which we can provide here.  If
+        // not, there was no JSON value, and we return the default, whether or
+        // not it is null.
+        if (result instanceof StaticValueProvider) {
+          return result.get();
+        }
+        return defaultValue;
       } catch (Throwable e) {
         throw new RuntimeException("Unable to load runtime value.", e);
       }
@@ -211,6 +251,15 @@ public interface ValueProvider<T> {
      */
     public String propertyName() {
       return propertyName;
+    }
+
+    @Override
+    public String toString() {
+      return MoreObjects.toStringHelper(this)
+          .add("propertyName", propertyName)
+          .add("default", defaultValue)
+          .add("value", isAccessible() ? get() : null)
+          .toString();
     }
   }
 

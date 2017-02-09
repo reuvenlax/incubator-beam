@@ -17,9 +17,12 @@
  */
 package org.apache.beam.sdk.io.gcp.bigquery;
 
+import static com.google.common.base.Verify.verifyNotNull;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.times;
@@ -47,9 +50,13 @@ import com.google.api.services.bigquery.model.JobStatus;
 import com.google.api.services.bigquery.model.Table;
 import com.google.api.services.bigquery.model.TableDataInsertAllResponse;
 import com.google.api.services.bigquery.model.TableDataInsertAllResponse.InsertErrors;
+import com.google.api.services.bigquery.model.TableDataList;
+import com.google.api.services.bigquery.model.TableFieldSchema;
 import com.google.api.services.bigquery.model.TableReference;
 import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import com.google.cloud.hadoop.util.ApiErrorExtractor;
+import com.google.cloud.hadoop.util.RetryBoundedBackOff;
 import com.google.common.collect.ImmutableList;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -64,6 +71,7 @@ import org.apache.beam.sdk.testing.FastNanoClockAndSleeper;
 import org.apache.beam.sdk.util.FluentBackoff;
 import org.apache.beam.sdk.util.RetryHttpRequestInitializer;
 import org.apache.beam.sdk.util.Transport;
+import org.joda.time.Duration;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -130,6 +138,7 @@ public class BigQueryServicesImplTest {
     verify(response, times(1)).getStatusCode();
     verify(response, times(1)).getContent();
     verify(response, times(1)).getContentType();
+    expectedLogs.verifyInfo(String.format("Started BigQuery job: %s", jobRef));
   }
 
   /**
@@ -153,6 +162,7 @@ public class BigQueryServicesImplTest {
     verify(response, times(1)).getStatusCode();
     verify(response, times(1)).getContent();
     verify(response, times(1)).getContentType();
+    expectedLogs.verifyNotLogged("Started BigQuery job");
   }
 
   /**
@@ -314,6 +324,143 @@ public class BigQueryServicesImplTest {
   }
 
   @Test
+  public void testGetTableSucceeds() throws Exception {
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+
+    Table testTable = new Table();
+    testTable.setTableReference(tableRef);
+
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(403).thenReturn(200);
+    when(response.getContent())
+        .thenReturn(toStream(errorWithReasonAndStatus("rateLimitExceeded", 403)))
+        .thenReturn(toStream(testTable));
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+
+    Table table = datasetService.getTable(tableRef, BackOff.ZERO_BACKOFF, Sleeper.DEFAULT);
+
+    assertEquals(testTable, table);
+    verify(response, times(2)).getStatusCode();
+    verify(response, times(2)).getContent();
+    verify(response, times(2)).getContentType();
+  }
+
+  @Test
+  public void testGetTableNotFound() throws IOException, InterruptedException {
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(404);
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+    Table table = datasetService.getTable(tableRef, BackOff.ZERO_BACKOFF, Sleeper.DEFAULT);
+
+    assertNull(table);
+    verify(response, times(1)).getStatusCode();
+    verify(response, times(1)).getContent();
+    verify(response, times(1)).getContentType();
+  }
+
+  @Test
+  public void testGetTableThrows() throws Exception {
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(401);
+
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+
+    thrown.expect(IOException.class);
+    thrown.expectMessage(String.format("Unable to get table: %s", tableRef.getTableId()));
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    datasetService.getTable(tableRef, BackOff.STOP_BACKOFF, Sleeper.DEFAULT);
+  }
+
+  @Test
+  public void testIsTableEmptySucceeds() throws Exception {
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+
+    TableDataList testDataList = new TableDataList()
+        .setRows(ImmutableList.of(new TableRow()));
+
+    // First response is 403 rate limited, second response has valid payload.
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(403).thenReturn(200);
+    when(response.getContent())
+        .thenReturn(toStream(errorWithReasonAndStatus("rateLimitExceeded", 403)))
+        .thenReturn(toStream(testDataList));
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+
+    assertFalse(
+        datasetService.isTableEmpty(tableRef, BackOff.ZERO_BACKOFF, Sleeper.DEFAULT));
+
+    verify(response, times(2)).getStatusCode();
+    verify(response, times(2)).getContent();
+    verify(response, times(2)).getContentType();
+  }
+
+  @Test
+  public void testIsTableEmptyNoRetryForNotFound() throws IOException, InterruptedException {
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(404);
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+
+    thrown.expect(IOException.class);
+    thrown.expectMessage(String.format("Unable to list table data: %s", tableRef.getTableId()));
+
+    try {
+      datasetService.isTableEmpty(tableRef, BackOff.ZERO_BACKOFF, Sleeper.DEFAULT);
+    } finally {
+      verify(response, times(1)).getStatusCode();
+      verify(response, times(1)).getContent();
+      verify(response, times(1)).getContentType();
+    }
+  }
+
+  @Test
+  public void testIsTableEmptyThrows() throws Exception {
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(401);
+
+    TableReference tableRef = new TableReference()
+        .setProjectId("projectId")
+        .setDatasetId("datasetId")
+        .setTableId("tableId");
+
+    BigQueryServicesImpl.DatasetServiceImpl datasetService =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+
+    thrown.expect(IOException.class);
+    thrown.expectMessage(String.format("Unable to list table data: %s", tableRef.getTableId()));
+
+    datasetService.isTableEmpty(tableRef, BackOff.STOP_BACKOFF, Sleeper.DEFAULT);
+  }
+
+  @Test
   public void testExecuteWithRetries() throws IOException, InterruptedException {
     Table testTable = new Table();
 
@@ -325,7 +472,8 @@ public class BigQueryServicesImplTest {
         bigquery.tables().get("projectId", "datasetId", "tableId"),
         "Failed to get table.",
         Sleeper.DEFAULT,
-        BackOff.STOP_BACKOFF);
+        BackOff.STOP_BACKOFF,
+        BigQueryServicesImpl.ALWAYS_RETRY);
 
     assertEquals(testTable, table);
     verify(response, times(1)).getStatusCode();
@@ -358,6 +506,11 @@ public class BigQueryServicesImplTest {
     verify(response, times(2)).getContentType();
     expectedLogs.verifyInfo("BigQuery insertAll exceeded rate limit, retrying");
   }
+  // A BackOff that makes a total of 4 attempts
+  private static final FluentBackoff TEST_BACKOFF = FluentBackoff.DEFAULT
+      .withInitialBackoff(Duration.millis(1))
+      .withExponent(1)
+      .withMaxRetries(3);
 
   /**
    * Tests that {@link DatasetServiceImpl#insertAll} retries selected rows on failure.
@@ -371,7 +524,8 @@ public class BigQueryServicesImplTest {
     List<String> insertIds = ImmutableList.of("a", "b");
 
     final TableDataInsertAllResponse bFailed = new TableDataInsertAllResponse()
-        .setInsertErrors(ImmutableList.of(new InsertErrors().setIndex(1L)));
+        .setInsertErrors(ImmutableList.of(
+            new InsertErrors().setIndex(1L).setErrors(ImmutableList.of(new ErrorProto()))));
 
     final TableDataInsertAllResponse allRowsSucceeded = new TableDataInsertAllResponse();
 
@@ -388,9 +542,6 @@ public class BigQueryServicesImplTest {
     verify(response, times(2)).getContentType();
     expectedLogs.verifyInfo("Retrying 1 failed inserts to BigQuery");
   }
-
-  // A BackOff that makes a total of 4 attempts
-  private static final FluentBackoff TEST_BACKOFF = FluentBackoff.DEFAULT.withMaxRetries(3);
 
   /**
    * Tests that {@link DatasetServiceImpl#insertAll} fails gracefully when persistent issues.
@@ -490,9 +641,128 @@ public class BigQueryServicesImplTest {
     GoogleJsonError error = new GoogleJsonError();
     error.setErrors(ImmutableList.of(info));
     error.setCode(status);
+    error.setMessage(reason);
     // The actual JSON response is an error container.
     GoogleJsonErrorContainer container = new GoogleJsonErrorContainer();
     container.setError(error);
     return container;
+  }
+
+  @Test
+  public void testCreateTableSucceeds() throws IOException {
+    TableReference ref =
+        new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
+    Table testTable = new Table().setTableReference(ref);
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(200);
+    when(response.getContent()).thenReturn(toStream(testTable));
+
+    BigQueryServicesImpl.DatasetServiceImpl services =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    Table ret =
+        services.tryCreateTable(
+            testTable,
+            new RetryBoundedBackOff(0, BackOff.ZERO_BACKOFF),
+            Sleeper.DEFAULT);
+    assertEquals(testTable, ret);
+    verify(response, times(1)).getStatusCode();
+    verify(response, times(1)).getContent();
+    verify(response, times(1)).getContentType();
+  }
+
+  /**
+   * Tests that {@link BigQueryServicesImpl} does not retry non-rate-limited attempts.
+   */
+  @Test
+  public void testCreateTableDoesNotRetry() throws IOException {
+    TableReference ref =
+        new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
+    Table testTable = new Table().setTableReference(ref);
+    // First response is 403 not-rate-limited, second response has valid payload but should not
+    // be invoked.
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(403).thenReturn(200);
+    when(response.getContent())
+        .thenReturn(toStream(errorWithReasonAndStatus("actually forbidden", 403)))
+        .thenReturn(toStream(testTable));
+
+    thrown.expect(GoogleJsonResponseException.class);
+    thrown.expectMessage("actually forbidden");
+
+    BigQueryServicesImpl.DatasetServiceImpl services =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    try {
+      services.tryCreateTable(
+          testTable,
+          new RetryBoundedBackOff(3, BackOff.ZERO_BACKOFF),
+          Sleeper.DEFAULT);
+      fail();
+    } catch (IOException e) {
+      verify(response, times(1)).getStatusCode();
+      verify(response, times(1)).getContent();
+      verify(response, times(1)).getContentType();
+      throw e;
+    }
+  }
+
+  /**
+   * Tests that table creation succeeds when the table already exists.
+   */
+  @Test
+  public void testCreateTableSucceedsAlreadyExists() throws IOException {
+    TableReference ref =
+        new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
+    TableSchema schema = new TableSchema().setFields(ImmutableList.of(
+        new TableFieldSchema().setName("column1").setType("String"),
+        new TableFieldSchema().setName("column2").setType("Integer")));
+    Table testTable = new Table().setTableReference(ref).setSchema(schema);
+
+    when(response.getStatusCode()).thenReturn(409); // 409 means already exists
+
+    BigQueryServicesImpl.DatasetServiceImpl services =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    Table ret =
+        services.tryCreateTable(
+            testTable,
+            new RetryBoundedBackOff(0, BackOff.ZERO_BACKOFF),
+            Sleeper.DEFAULT);
+
+    assertNull(ret);
+    verify(response, times(1)).getStatusCode();
+    verify(response, times(1)).getContent();
+    verify(response, times(1)).getContentType();
+  }
+
+  /**
+   * Tests that {@link BigQueryServicesImpl} retries quota rate limited attempts.
+   */
+  @Test
+  public void testCreateTableRetry() throws IOException {
+    TableReference ref =
+        new TableReference().setProjectId("project").setDatasetId("dataset").setTableId("table");
+    Table testTable = new Table().setTableReference(ref);
+
+    // First response is 403 rate limited, second response has valid payload.
+    when(response.getContentType()).thenReturn(Json.MEDIA_TYPE);
+    when(response.getStatusCode()).thenReturn(403).thenReturn(200);
+    when(response.getContent())
+        .thenReturn(toStream(errorWithReasonAndStatus("rateLimitExceeded", 403)))
+        .thenReturn(toStream(testTable));
+
+    BigQueryServicesImpl.DatasetServiceImpl services =
+        new BigQueryServicesImpl.DatasetServiceImpl(bigquery, PipelineOptionsFactory.create());
+    Table ret =
+        services.tryCreateTable(
+            testTable,
+            new RetryBoundedBackOff(3, BackOff.ZERO_BACKOFF),
+            Sleeper.DEFAULT);
+    assertEquals(testTable, ret);
+    verify(response, times(2)).getStatusCode();
+    verify(response, times(2)).getContent();
+    verify(response, times(2)).getContentType();
+    verifyNotNull(ret.getTableReference());
+    expectedLogs.verifyInfo(
+        "Quota limit reached when creating table project:dataset.table, "
+            + "retrying up to 5.0 minutes");
   }
 }

@@ -53,6 +53,9 @@ import org.junit.runners.JUnit4;
 public class TopTest {
 
   @Rule
+  public final TestPipeline p = TestPipeline.create();
+
+  @Rule
   public ExpectedException expectedEx = ExpectedException.none();
 
   @SuppressWarnings("unchecked")
@@ -93,7 +96,6 @@ public class TopTest {
   @Category(NeedsRunner.class)
   @SuppressWarnings("unchecked")
   public void testTop() {
-    Pipeline p = TestPipeline.create();
     PCollection<String> input =
         p.apply(Create.of(Arrays.asList(COLLECTION))
                  .withCoder(StringUtf8Coder.of()));
@@ -125,7 +127,6 @@ public class TopTest {
   @Category(NeedsRunner.class)
   @SuppressWarnings("unchecked")
   public void testTopEmpty() {
-    Pipeline p = TestPipeline.create();
     PCollection<String> input =
         p.apply(Create.of(Arrays.asList(EMPTY_COLLECTION))
                  .withCoder(StringUtf8Coder.of()));
@@ -151,7 +152,8 @@ public class TopTest {
 
   @Test
   public void testTopEmptyWithIncompatibleWindows() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
+
     Bound<String> windowingFn = Window.<String>into(FixedWindows.of(Duration.standardDays(10L)));
     PCollection<String> input =
         p.apply(Create.timestamped(Collections.<String>emptyList(), Collections.<Long>emptyList()))
@@ -170,7 +172,6 @@ public class TopTest {
   @Category(NeedsRunner.class)
   @SuppressWarnings("unchecked")
   public void testTopZero() {
-    Pipeline p = TestPipeline.create();
     PCollection<String> input =
         p.apply(Create.of(Arrays.asList(COLLECTION))
                  .withCoder(StringUtf8Coder.of()));
@@ -202,7 +203,8 @@ public class TopTest {
   // This is a purely compile-time test.  If the code compiles, then it worked.
   @Test
   public void testPerKeySerializabilityRequirement() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
+
     p.apply("CreateCollection", Create.of(Arrays.asList(COLLECTION))
         .withCoder(StringUtf8Coder.of()));
 
@@ -218,7 +220,8 @@ public class TopTest {
 
   @Test
   public void testCountConstraint() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
+
     PCollection<String> input =
         p.apply(Create.of(Arrays.asList(COLLECTION))
             .withCoder(StringUtf8Coder.of()));
@@ -231,12 +234,13 @@ public class TopTest {
 
   @Test
   public void testTopGetNames() {
-    assertEquals("Top.Globally", Top.of(1, new OrderByLength()).getName());
-    assertEquals("Smallest.Globally", Top.smallest(1).getName());
-    assertEquals("Largest.Globally", Top.largest(2).getName());
-    assertEquals("Top.PerKey", Top.perKey(1, new IntegerComparator()).getName());
-    assertEquals("Smallest.PerKey", Top.<String, Integer>smallestPerKey(1).getName());
-    assertEquals("Largest.PerKey", Top.<String, Integer>largestPerKey(2).getName());
+    assertEquals("Combine.globally(Top(OrderByLength))", Top.of(1, new OrderByLength()).getName());
+    assertEquals("Combine.globally(Top(Smallest))", Top.smallest(1).getName());
+    assertEquals("Combine.globally(Top(Largest))", Top.largest(2).getName());
+    assertEquals("Combine.perKey(Top(IntegerComparator))",
+        Top.perKey(1, new IntegerComparator()).getName());
+    assertEquals("Combine.perKey(Top(Smallest))", Top.<String, Integer>smallestPerKey(1).getName());
+    assertEquals("Combine.perKey(Top(Largest))", Top.<String, Integer>largestPerKey(2).getName());
   }
 
   @Test

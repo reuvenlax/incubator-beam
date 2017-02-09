@@ -55,7 +55,6 @@ import java.io.PrintStream;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -165,7 +164,7 @@ public class PipelineOptionsFactory {
    * specifically requested PipelineOptions by invoking
    * {@link PipelineOptionsFactory#printHelp(PrintStream, Class)}.
    */
-  public static Builder fromArgs(String[] args) {
+  public static Builder fromArgs(String... args) {
     return new Builder().fromArgs(args);
   }
 
@@ -236,7 +235,7 @@ public class PipelineOptionsFactory {
      * specifically requested PipelineOptions by invoking
      * {@link PipelineOptionsFactory#printHelp(PrintStream, Class)}.
      */
-    public Builder fromArgs(String[] args) {
+    public Builder fromArgs(String... args) {
       checkNotNull(args, "Arguments should not be null.");
       return new Builder(args, validation, strictParsing);
     }
@@ -481,23 +480,6 @@ public class PipelineOptionsFactory {
   /** The width at which options should be output. */
   private static final int TERMINAL_WIDTH = 80;
 
-  /**
-   * Finds the appropriate {@code ClassLoader} to be used by the
-   * {@link ServiceLoader#load} call, which by default would use the context
-   * {@code ClassLoader}, which can be null. The fallback is as follows: context
-   * ClassLoader, class ClassLoader and finaly the system ClassLoader.
-   */
-  static ClassLoader findClassLoader() {
-    ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-    if (classLoader == null) {
-      classLoader = PipelineOptionsFactory.class.getClassLoader();
-    }
-    if (classLoader == null) {
-      classLoader = ClassLoader.getSystemClassLoader();
-    }
-    return classLoader;
-  }
-
   static {
     try {
       IGNORED_METHODS = ImmutableSet.<Method>builder()
@@ -514,10 +496,10 @@ public class PipelineOptionsFactory {
       throw new ExceptionInInitializerError(e);
     }
 
-    CLASS_LOADER = findClassLoader();
+    CLASS_LOADER = ReflectHelpers.findClassLoader();
 
     Set<PipelineRunnerRegistrar> pipelineRunnerRegistrars =
-        Sets.newTreeSet(ObjectsClassComparator.INSTANCE);
+        Sets.newTreeSet(ReflectHelpers.ObjectsClassComparator.INSTANCE);
     pipelineRunnerRegistrars.addAll(
         Lists.newArrayList(ServiceLoader.load(PipelineRunnerRegistrar.class, CLASS_LOADER)));
     // Store the list of all available pipeline runners.
@@ -579,7 +561,7 @@ public class PipelineOptionsFactory {
   private static void initializeRegistry() {
     register(PipelineOptions.class);
     Set<PipelineOptionsRegistrar> pipelineOptionsRegistrars =
-        Sets.newTreeSet(ObjectsClassComparator.INSTANCE);
+        Sets.newTreeSet(ReflectHelpers.ObjectsClassComparator.INSTANCE);
     pipelineOptionsRegistrars.addAll(
         Lists.newArrayList(ServiceLoader.load(PipelineOptionsRegistrar.class, CLASS_LOADER)));
     for (PipelineOptionsRegistrar registrar : pipelineOptionsRegistrars) {
@@ -626,7 +608,7 @@ public class PipelineOptionsFactory {
         List<PropertyDescriptor> propertyDescriptors =
             validateClass(iface, validatedPipelineOptionsInterfaces, allProxyClass);
         COMBINED_CACHE.put(combinedPipelineOptionsInterfaces,
-            new Registration<T>(allProxyClass, propertyDescriptors));
+            new Registration<>(allProxyClass, propertyDescriptors));
       } catch (IntrospectionException e) {
         throw new RuntimeException(e);
       }
@@ -641,7 +623,7 @@ public class PipelineOptionsFactory {
         List<PropertyDescriptor> propertyDescriptors =
             validateClass(iface, validatedPipelineOptionsInterfaces, proxyClass);
         INTERFACE_CACHE.put(iface,
-            new Registration<T>(proxyClass, propertyDescriptors));
+            new Registration<>(proxyClass, propertyDescriptors));
       } catch (IntrospectionException e) {
         throw new RuntimeException(e);
       }
@@ -1236,6 +1218,7 @@ public class PipelineOptionsFactory {
     // Ignore methods on the base PipelineOptions interface.
     try {
       knownMethods.add(iface.getMethod("as", Class.class));
+      knownMethods.add(iface.getMethod("outputRuntimeOptions"));
       knownMethods.add(iface.getMethod("populateDisplayData", DisplayData.Builder.class));
     } catch (NoSuchMethodException | SecurityException e) {
       throw new RuntimeException(e);
@@ -1387,15 +1370,6 @@ public class PipelineOptionsFactory {
     @Override
     public int compare(Class<?> o1, Class<?> o2) {
       return o1.getName().compareTo(o2.getName());
-    }
-  }
-
-  /** A {@link Comparator} that uses the object's classes canonical name to compare them. */
-  private static class ObjectsClassComparator implements Comparator<Object> {
-    static final ObjectsClassComparator INSTANCE = new ObjectsClassComparator();
-    @Override
-    public int compare(Object o1, Object o2) {
-      return o1.getClass().getCanonicalName().compareTo(o2.getClass().getCanonicalName());
     }
   }
 
@@ -1586,7 +1560,7 @@ public class PipelineOptionsFactory {
         // Search for close matches for missing properties.
         // Either off by one or off by two character errors.
         if (!propertyNamesToGetters.containsKey(entry.getKey())) {
-          SortedSet<String> closestMatches = new TreeSet<String>(
+          SortedSet<String> closestMatches = new TreeSet<>(
               Sets.filter(propertyNamesToGetters.keySet(), new Predicate<String>() {
                 @Override
                 public boolean apply(@Nonnull String input) {
@@ -1635,13 +1609,7 @@ public class PipelineOptionsFactory {
               throw new IllegalArgumentException(msg, e);
             }
           }
-        } else if ((returnType.isArray() && (SIMPLE_TYPES.contains(returnType.getComponentType())
-                   || returnType.getComponentType().isEnum()))
-                   || Collection.class.isAssignableFrom(returnType)
-                   || (returnType.equals(ValueProvider.class)
-                       && MAPPER.getTypeFactory().constructType(
-                         ((ParameterizedType) method.getGenericReturnType())
-                         .getActualTypeArguments()[0]).isCollectionLikeType())) {
+        } else if (isCollectionOrArrayOfAllowedTypes(returnType, type)) {
           // Split any strings with ","
           List<String> values = FluentIterable.from(entry.getValue())
               .transformAndConcat(new Function<String, Iterable<String>>() {
@@ -1651,31 +1619,21 @@ public class PipelineOptionsFactory {
                 }
           }).toList();
 
-          if (returnType.isArray() && !returnType.getComponentType().equals(String.class)
-              || Collection.class.isAssignableFrom(returnType)
-              || returnType.equals(ValueProvider.class)) {
-            for (String value : values) {
-              checkArgument(!value.isEmpty(),
-                  "Empty argument value is only allowed for String, String Array, "
-                            + "and Collections of Strings, but received: %s",
-                            method.getGenericReturnType());
-            }
+          if (values.contains("")) {
+            checkEmptyStringAllowed(returnType, type, method.getGenericReturnType().toString());
           }
           convertedOptions.put(entry.getKey(), MAPPER.convertValue(values, type));
-        } else if (SIMPLE_TYPES.contains(returnType) || returnType.isEnum()
-                   || returnType.equals(ValueProvider.class)) {
+        } else if (isSimpleType(returnType, type)) {
           String value = Iterables.getOnlyElement(entry.getValue());
-          checkArgument(returnType.equals(String.class) || !value.isEmpty(),
-               "Empty argument value is only allowed for String, String Array, "
-                        + "and Collections of Strings, but received: %s",
-                        method.getGenericReturnType());
+          if (value.isEmpty()) {
+            checkEmptyStringAllowed(returnType, type, method.getGenericReturnType().toString());
+          }
           convertedOptions.put(entry.getKey(), MAPPER.convertValue(value, type));
         } else {
           String value = Iterables.getOnlyElement(entry.getValue());
-          checkArgument(returnType.equals(String.class) || !value.isEmpty(),
-                "Empty argument value is only allowed for String, String Array, "
-                        + "and Collections of Strings, but received: %s",
-                        method.getGenericReturnType());
+          if (value.isEmpty()) {
+            checkEmptyStringAllowed(returnType, type, method.getGenericReturnType().toString());
+          }
           try {
             convertedOptions.put(entry.getKey(), MAPPER.readValue(value, type));
           } catch (IOException e) {
@@ -1692,6 +1650,79 @@ public class PipelineOptionsFactory {
       }
     }
     return convertedOptions;
+  }
+
+
+  /**
+   * Returns true if the given type is one of {@code SIMPLE_TYPES} or an enum, or if the given type
+   * is a {@link ValueProvider ValueProvider&lt;T&gt;} and {@code T} is one of {@code SIMPLE_TYPES}
+   * or an enum.
+   */
+  private static boolean isSimpleType(Class<?> type, JavaType genericType) {
+    Class<?> unwrappedType = type.equals(ValueProvider.class)
+        ? genericType.containedType(0).getRawClass() : type;
+    return SIMPLE_TYPES.contains(unwrappedType) || unwrappedType.isEnum();
+  }
+
+  /**
+   * Returns true if the given type is an array or {@link Collection} of {@code SIMPLE_TYPES} or
+   * enums, or if the given type is a {@link ValueProvider ValueProvider&lt;T&gt;} and {@code T} is
+   * an array or {@link Collection} of {@code SIMPLE_TYPES} or enums.
+   */
+  private static boolean isCollectionOrArrayOfAllowedTypes(Class<?> type, JavaType genericType) {
+    JavaType containerType = type.equals(ValueProvider.class)
+        ? genericType.containedType(0) : genericType;
+
+    // Check if it is an array of simple types or enum.
+    if (containerType.getRawClass().isArray()
+        && (SIMPLE_TYPES.contains(containerType.getRawClass().getComponentType())
+            || containerType.getRawClass().getComponentType().isEnum())) {
+        return true;
+    }
+    // Check if it is Collection of simple types or enum.
+    if (Collection.class.isAssignableFrom(containerType.getRawClass())) {
+      JavaType innerType = containerType.containedType(0);
+      // Note that raw types are allowed, hence the null check.
+      if (innerType == null || SIMPLE_TYPES.contains(innerType.getRawClass())
+          || innerType.getRawClass().isEnum()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Ensures that empty string value is allowed for a given type.
+   *
+   * <p>Empty strings are only allowed for {@link String}, {@link String String[]},
+   * {@link Collection Collection&lt;String&gt;}, or {@link ValueProvider ValueProvider&lt;T&gt;}
+   * and {@code T} is of type {@link String}, {@link String String[]},
+   * {@link Collection Collection&lt;String&gt;}.
+   *
+   * @param type class object for the type under check.
+   * @param genericType complete type information for the type under check.
+   * @param genericTypeName a string representation of the complete type information.
+   */
+  private static void checkEmptyStringAllowed(Class<?> type, JavaType genericType,
+      String genericTypeName) {
+    JavaType unwrappedType = type.equals(ValueProvider.class)
+        ? genericType.containedType(0) : genericType;
+
+    Class<?> containedType = unwrappedType.getRawClass();
+    if (unwrappedType.getRawClass().isArray()) {
+      containedType = unwrappedType.getRawClass().getComponentType();
+    } else if (Collection.class.isAssignableFrom(unwrappedType.getRawClass())) {
+      JavaType innerType = unwrappedType.containedType(0);
+      // Note that raw types are allowed, hence the null check.
+      containedType = innerType == null ? String.class : innerType.getRawClass();
+    }
+    if (!containedType.equals(String.class)) {
+      String msg = String.format("Empty argument value is only allowed for String, String Array, "
+              + "Collections of Strings or any of these types in a parameterized ValueProvider, "
+              + "but received: %s",
+          genericTypeName);
+      throw new IllegalArgumentException(msg);
+    }
   }
 
   @VisibleForTesting

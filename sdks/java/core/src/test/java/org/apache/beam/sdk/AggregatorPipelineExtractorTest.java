@@ -30,12 +30,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.beam.sdk.Pipeline.PipelineVisitor;
-import org.apache.beam.sdk.runners.TransformTreeNode;
+import org.apache.beam.sdk.runners.TransformHierarchy;
 import org.apache.beam.sdk.transforms.Aggregator;
 import org.apache.beam.sdk.transforms.Combine.CombineFn;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.Max;
 import org.apache.beam.sdk.transforms.Min;
-import org.apache.beam.sdk.transforms.OldDoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.Sum;
@@ -70,10 +70,10 @@ public class AggregatorPipelineExtractorTest {
     AggregatorProvidingDoFn<ThreadGroup, StrictMath> fn = new AggregatorProvidingDoFn<>();
     when(bound.getFn()).thenReturn(fn);
 
-    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(new Sum.SumLongFn());
-    Aggregator<Integer, Integer> aggregatorTwo = fn.addAggregator(new Min.MinIntegerFn());
+    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(Sum.ofLongs());
+    Aggregator<Integer, Integer> aggregatorTwo = fn.addAggregator(Min.ofIntegers());
 
-    TransformTreeNode transformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node transformNode = mock(TransformHierarchy.Node.class);
     when(transformNode.getTransform()).thenReturn(bound);
 
     doAnswer(new VisitNodesAnswer(ImmutableList.of(transformNode)))
@@ -98,10 +98,10 @@ public class AggregatorPipelineExtractorTest {
     AggregatorProvidingDoFn<Object, Void> fn = new AggregatorProvidingDoFn<>();
     when(bound.getFn()).thenReturn(fn);
 
-    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(new Max.MaxLongFn());
-    Aggregator<Double, Double> aggregatorTwo = fn.addAggregator(new Min.MinDoubleFn());
+    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(Max.ofLongs());
+    Aggregator<Double, Double> aggregatorTwo = fn.addAggregator(Min.ofDoubles());
 
-    TransformTreeNode transformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node transformNode = mock(TransformHierarchy.Node.class);
     when(transformNode.getTransform()).thenReturn(bound);
 
     doAnswer(new VisitNodesAnswer(ImmutableList.of(transformNode)))
@@ -129,12 +129,12 @@ public class AggregatorPipelineExtractorTest {
     when(bound.getFn()).thenReturn(fn);
     when(otherBound.getFn()).thenReturn(fn);
 
-    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(new Sum.SumLongFn());
-    Aggregator<Double, Double> aggregatorTwo = fn.addAggregator(new Min.MinDoubleFn());
+    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(Sum.ofLongs());
+    Aggregator<Double, Double> aggregatorTwo = fn.addAggregator(Min.ofDoubles());
 
-    TransformTreeNode transformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node transformNode = mock(TransformHierarchy.Node.class);
     when(transformNode.getTransform()).thenReturn(bound);
-    TransformTreeNode otherTransformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node otherTransformNode = mock(TransformHierarchy.Node.class);
     when(otherTransformNode.getTransform()).thenReturn(otherBound);
 
     doAnswer(new VisitNodesAnswer(ImmutableList.of(transformNode, otherTransformNode)))
@@ -160,7 +160,7 @@ public class AggregatorPipelineExtractorTest {
     ParDo.Bound bound = mock(ParDo.Bound.class, "Bound");
 
     AggregatorProvidingDoFn<ThreadGroup, Void> fn = new AggregatorProvidingDoFn<>();
-    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(new Sum.SumLongFn());
+    Aggregator<Long, Long> aggregatorOne = fn.addAggregator(Sum.ofLongs());
 
     when(bound.getFn()).thenReturn(fn);
 
@@ -168,13 +168,13 @@ public class AggregatorPipelineExtractorTest {
     ParDo.BoundMulti otherBound = mock(ParDo.BoundMulti.class, "otherBound");
 
     AggregatorProvidingDoFn<Long, Long> otherFn = new AggregatorProvidingDoFn<>();
-    Aggregator<Double, Double> aggregatorTwo = otherFn.addAggregator(new Sum.SumDoubleFn());
+    Aggregator<Double, Double> aggregatorTwo = otherFn.addAggregator(Sum.ofDoubles());
 
     when(otherBound.getFn()).thenReturn(otherFn);
 
-    TransformTreeNode transformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node transformNode = mock(TransformHierarchy.Node.class);
     when(transformNode.getTransform()).thenReturn(bound);
-    TransformTreeNode otherTransformNode = mock(TransformTreeNode.class);
+    TransformHierarchy.Node otherTransformNode = mock(TransformHierarchy.Node.class);
     when(otherTransformNode.getTransform()).thenReturn(otherBound);
 
     doAnswer(new VisitNodesAnswer(ImmutableList.of(transformNode, otherTransformNode)))
@@ -192,23 +192,23 @@ public class AggregatorPipelineExtractorTest {
   }
 
   private static class VisitNodesAnswer implements Answer<Object> {
-    private final List<TransformTreeNode> nodes;
+    private final List<TransformHierarchy.Node> nodes;
 
-    public VisitNodesAnswer(List<TransformTreeNode> nodes) {
+    public VisitNodesAnswer(List<TransformHierarchy.Node> nodes) {
       this.nodes = nodes;
     }
 
     @Override
     public Object answer(InvocationOnMock invocation) throws Throwable {
       PipelineVisitor visitor = (PipelineVisitor) invocation.getArguments()[0];
-      for (TransformTreeNode node : nodes) {
+      for (TransformHierarchy.Node node : nodes) {
         visitor.visitPrimitiveTransform(node);
       }
       return null;
     }
   }
 
-  private static class AggregatorProvidingDoFn<InT, OuT> extends OldDoFn<InT, OuT> {
+  private static class AggregatorProvidingDoFn<InT, OuT> extends DoFn<InT, OuT> {
     public <InputT, OutT> Aggregator<InputT, OutT> addAggregator(
         CombineFn<InputT, ?, OutT> combiner) {
       return createAggregator(randomName(), combiner);
@@ -218,8 +218,8 @@ public class AggregatorPipelineExtractorTest {
       return UUID.randomUUID().toString();
     }
 
-    @Override
-    public void processElement(OldDoFn<InT, OuT>.ProcessContext c) throws Exception {
+    @ProcessElement
+    public void processElement(DoFn<InT, OuT>.ProcessContext c) throws Exception {
       fail();
     }
   }

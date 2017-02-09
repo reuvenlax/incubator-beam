@@ -17,48 +17,34 @@
  */
 package org.apache.beam.runners.direct;
 
-import static com.google.common.base.Preconditions.checkArgument;
-
-import org.apache.beam.runners.core.GBKIntoKeyedWorkItems;
-import org.apache.beam.sdk.coders.KvCoder;
+import com.google.common.collect.Iterables;
+import java.util.List;
+import org.apache.beam.runners.core.KeyedWorkItem;
+import org.apache.beam.runners.core.SplittableParDo.GBKIntoKeyedWorkItems;
+import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.runners.PTransformOverrideFactory;
 import org.apache.beam.sdk.transforms.PTransform;
-import org.apache.beam.sdk.util.KeyedWorkItem;
-import org.apache.beam.sdk.util.KeyedWorkItemCoder;
-import org.apache.beam.sdk.util.WindowingStrategy;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TaggedPValue;
 
-/** Provides an implementation of {@link GBKIntoKeyedWorkItems} for the Direct Runner. */
+/**
+ * Provides an implementation of {@link SplittableParDo.GBKIntoKeyedWorkItems} for the Direct
+ * Runner.
+ */
 class DirectGBKIntoKeyedWorkItemsOverrideFactory<KeyT, InputT>
     implements PTransformOverrideFactory<
         PCollection<KV<KeyT, InputT>>, PCollection<KeyedWorkItem<KeyT, InputT>>,
         GBKIntoKeyedWorkItems<KeyT, InputT>> {
   @Override
   public PTransform<PCollection<KV<KeyT, InputT>>, PCollection<KeyedWorkItem<KeyT, InputT>>>
-      override(GBKIntoKeyedWorkItems<KeyT, InputT> transform) {
-    return new DirectGBKIntoKeyedWorkItems<>(transform.getName());
+      getReplacementTransform(GBKIntoKeyedWorkItems<KeyT, InputT> transform) {
+    return new DirectGroupByKey.DirectGroupByKeyOnly<>();
   }
 
-  /** The Direct Runner specific implementation of {@link GBKIntoKeyedWorkItems}. */
-  private static class DirectGBKIntoKeyedWorkItems<KeyT, InputT>
-      extends PTransform<PCollection<KV<KeyT, InputT>>, PCollection<KeyedWorkItem<KeyT, InputT>>> {
-    DirectGBKIntoKeyedWorkItems(String name) {
-      super(name);
-    }
-
-    @Override
-    public PCollection<KeyedWorkItem<KeyT, InputT>> apply(PCollection<KV<KeyT, InputT>> input) {
-      checkArgument(input.getCoder() instanceof KvCoder);
-      KvCoder<KeyT, InputT> kvCoder = (KvCoder<KeyT, InputT>) input.getCoder();
-      return input
-          // TODO: Perhaps windowing strategy should instead be set by ReifyTAW, or by DGBKO
-          .setWindowingStrategyInternal(WindowingStrategy.globalDefault())
-          .apply(new DirectGroupByKey.DirectGroupByKeyOnly<KeyT, InputT>())
-          .setCoder(
-              KeyedWorkItemCoder.of(
-                  kvCoder.getKeyCoder(),
-                  kvCoder.getValueCoder(),
-                  input.getWindowingStrategy().getWindowFn().windowCoder()));
-    }
+  @Override
+  public PCollection<KV<KeyT, InputT>> getInput(
+      List<TaggedPValue> inputs, Pipeline p) {
+    return (PCollection<KV<KeyT, InputT>>) Iterables.getOnlyElement(inputs).getValue();
   }
 }

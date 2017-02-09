@@ -24,7 +24,6 @@ import static org.apache.beam.sdk.TestUtils.NO_LINES;
 import static org.apache.beam.sdk.TestUtils.NO_LINES_ARRAY;
 
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,13 +31,19 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.BigEndianLongCoder;
+import org.apache.beam.sdk.coders.CannotProvideCoderException;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CollectionCoder;
 import org.apache.beam.sdk.coders.IterableCoder;
 import org.apache.beam.sdk.coders.ListCoder;
+import org.apache.beam.sdk.coders.NullableCoder;
 import org.apache.beam.sdk.coders.SetCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.coders.VarLongCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
+import org.apache.beam.sdk.io.CountingInput;
+import org.apache.beam.sdk.testing.FlattenWithHeterogeneousCoders;
 import org.apache.beam.sdk.testing.NeedsRunner;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.RunnableOnService;
@@ -65,7 +70,11 @@ import org.junit.runners.JUnit4;
 public class FlattenTest implements Serializable {
 
   @Rule
+  public final transient TestPipeline p = TestPipeline.create();
+
+  @Rule
   public transient ExpectedException thrown = ExpectedException.none();
+
 
   private static class ClassWithoutCoder { }
 
@@ -73,8 +82,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenPCollectionList() {
-    Pipeline p = TestPipeline.create();
-
     List<List<String>> inputs = Arrays.asList(
       LINES, NO_LINES, LINES2, NO_LINES, LINES, NO_LINES);
 
@@ -89,8 +96,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenPCollectionListThenParDo() {
-    Pipeline p = TestPipeline.create();
-
     List<List<String>> inputs = Arrays.asList(
       LINES, NO_LINES, LINES2, NO_LINES, LINES, NO_LINES);
 
@@ -106,8 +111,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenPCollectionListEmpty() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output =
         PCollectionList.<String>empty(p)
         .apply(Flatten.<String>pCollections()).setCoder(StringUtf8Coder.of());
@@ -119,27 +122,60 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenInputMultipleCopies() {
-    Pipeline p = TestPipeline.create();
+    int count = 5;
+    PCollection<Long> longs = p.apply("mkLines", CountingInput.upTo(count));
+    PCollection<Long> biggerLongs =
+        p.apply("mkOtherLines", CountingInput.upTo(count))
+            .apply(
+                MapElements.via(
+                    new SimpleFunction<Long, Long>() {
+                      @Override
+                      public Long apply(Long input) {
+                        return input + 10L;
+                      }
+                    }));
 
-    PCollection<String> lines = p.apply("mkLines", Create.of(LINES));
-    PCollection<String> lines2 = p.apply("mkOtherLines", Create.of(LINES2));
+    PCollection<Long> flattened =
+        PCollectionList.of(longs).and(longs).and(biggerLongs).apply(Flatten.<Long>pCollections());
 
-    PCollection<String> flattened = PCollectionList.of(lines)
-        .and(lines2)
-        .and(lines)
-        .and(lines)
-        .apply(Flatten.<String>pCollections());
+    List<Long> expectedLongs = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+      // The duplicated input
+      expectedLongs.add((long) i);
+      expectedLongs.add((long) i);
+      // The bigger longs
+      expectedLongs.add(i + 10L);
+    }
+    PAssert.that(flattened).containsInAnyOrder(expectedLongs);
 
-    PAssert.that(flattened).containsInAnyOrder(Iterables.concat(LINES, LINES, LINES, LINES2));
+    p.run();
+  }
 
+  @Test
+  @Category({RunnableOnService.class, FlattenWithHeterogeneousCoders.class})
+  public void testFlattenMultipleCoders() throws CannotProvideCoderException {
+    PCollection<Long> bigEndianLongs =
+        p.apply(
+            "BigEndianLongs",
+            Create.of(0L, 1L, 2L, 3L, null, 4L, 5L, null, 6L, 7L, 8L, null, 9L)
+                .withCoder(NullableCoder.of(BigEndianLongCoder.of())));
+    PCollection<Long> varLongs =
+        p.apply("VarLengthLongs", CountingInput.upTo(5L)).setCoder(VarLongCoder.of());
+
+    PCollection<Long> flattened =
+        PCollectionList.of(bigEndianLongs)
+            .and(varLongs)
+            .apply(Flatten.<Long>pCollections())
+            .setCoder(NullableCoder.of(VarLongCoder.of()));
+    PAssert.that(flattened)
+        .containsInAnyOrder(
+            0L, 0L, 1L, 1L, 2L, 3L, 2L, 4L, 5L, 3L, 6L, 7L, 4L, 8L, 9L, null, null, null);
     p.run();
   }
 
   @Test
   @Category(RunnableOnService.class)
   public void testEmptyFlattenAsSideInput() {
-    Pipeline p = TestPipeline.create();
-
     final PCollectionView<Iterable<String>> view =
         PCollectionList.<String>empty(p)
         .apply(Flatten.<String>pCollections()).setCoder(StringUtf8Coder.of())
@@ -163,9 +199,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenPCollectionListEmptyThenParDo() {
-
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output =
         PCollectionList.<String>empty(p)
         .apply(Flatten.<String>pCollections()).setCoder(StringUtf8Coder.of())
@@ -182,8 +215,6 @@ public class FlattenTest implements Serializable {
     thrown.expect(IllegalStateException.class);
     thrown.expectMessage("cannot provide a Coder for empty");
 
-    Pipeline p = TestPipeline.create();
-
     PCollectionList.<ClassWithoutCoder>empty(p)
         .apply(Flatten.<ClassWithoutCoder>pCollections());
 
@@ -195,8 +226,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenIterables() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<Iterable<String>> input = p
         .apply(Create.<Iterable<String>>of(LINES)
             .withCoder(IterableCoder.of(StringUtf8Coder.of())));
@@ -213,8 +242,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenIterablesLists() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<List<String>> input =
         p.apply(Create.<List<String>>of(LINES).withCoder(ListCoder.of(StringUtf8Coder.of())));
 
@@ -228,8 +255,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenIterablesSets() {
-    Pipeline p = TestPipeline.create();
-
     Set<String> linesSet = ImmutableSet.copyOf(LINES);
 
     PCollection<Set<String>> input =
@@ -245,9 +270,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenIterablesCollections() {
-
-    Pipeline p = TestPipeline.create();
-
     Set<String> linesSet = ImmutableSet.copyOf(LINES);
 
     PCollection<Collection<String>> input =
@@ -264,8 +286,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(RunnableOnService.class)
   public void testFlattenIterablesEmpty() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<Iterable<String>> input = p
         .apply(Create.<Iterable<String>>of(NO_LINES)
             .withCoder(IterableCoder.of(StringUtf8Coder.of())));
@@ -284,8 +304,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void testEqualWindowFnPropagation() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> input1 =
         p.apply("CreateInput1", Create.of("Input1"))
         .apply("Window1", Window.<String>into(FixedWindows.of(Duration.standardMinutes(1))));
@@ -306,8 +324,6 @@ public class FlattenTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void testCompatibleWindowFnPropagation() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> input1 =
         p.apply("CreateInput1", Create.of("Input1"))
         .apply("Window1",
@@ -329,7 +345,7 @@ public class FlattenTest implements Serializable {
 
   @Test
   public void testIncompatibleWindowFnPropagationFailure() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
 
     PCollection<String> input1 =
         p.apply("CreateInput1", Create.of("Input1"))

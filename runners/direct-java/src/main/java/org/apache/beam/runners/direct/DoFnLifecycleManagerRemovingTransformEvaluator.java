@@ -18,6 +18,8 @@
 
 package org.apache.beam.runners.direct;
 
+import org.apache.beam.runners.core.TimerInternals.TimerData;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,16 +31,16 @@ import org.slf4j.LoggerFactory;
 class DoFnLifecycleManagerRemovingTransformEvaluator<InputT> implements TransformEvaluator<InputT> {
   private static final Logger LOG =
       LoggerFactory.getLogger(DoFnLifecycleManagerRemovingTransformEvaluator.class);
-  private final TransformEvaluator<InputT> underlying;
+  private final ParDoEvaluator<InputT, ?> underlying;
   private final DoFnLifecycleManager lifecycleManager;
 
-  public static <InputT> TransformEvaluator<InputT> wrapping(
-      TransformEvaluator<InputT> underlying, DoFnLifecycleManager lifecycleManager) {
+  public static <InputT> DoFnLifecycleManagerRemovingTransformEvaluator<InputT> wrapping(
+      ParDoEvaluator<InputT, ?> underlying, DoFnLifecycleManager lifecycleManager) {
     return new DoFnLifecycleManagerRemovingTransformEvaluator<>(underlying, lifecycleManager);
   }
 
   private DoFnLifecycleManagerRemovingTransformEvaluator(
-      TransformEvaluator<InputT> underlying, DoFnLifecycleManager lifecycleManager) {
+      ParDoEvaluator<InputT, ?> underlying, DoFnLifecycleManager lifecycleManager) {
     this.underlying = underlying;
     this.lifecycleManager = lifecycleManager;
   }
@@ -53,8 +55,17 @@ class DoFnLifecycleManagerRemovingTransformEvaluator<InputT> implements Transfor
     }
   }
 
+  public void onTimer(TimerData timer, BoundedWindow window) throws Exception {
+    try {
+      underlying.onTimer(timer, window);
+    } catch (Exception e) {
+      onException(e, "Exception encountered while cleaning up after processing a timer");
+      throw e;
+    }
+  }
+
   @Override
-  public TransformResult finishBundle() throws Exception {
+  public TransformResult<InputT> finishBundle() throws Exception {
     try {
       return underlying.finishBundle();
     } catch (Exception e) {

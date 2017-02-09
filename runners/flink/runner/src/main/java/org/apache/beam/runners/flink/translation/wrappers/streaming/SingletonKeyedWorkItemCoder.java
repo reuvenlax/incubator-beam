@@ -26,12 +26,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
+import org.apache.beam.runners.core.KeyedWorkItem;
+import org.apache.beam.runners.core.KeyedWorkItemCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.StandardCoder;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
-import org.apache.beam.sdk.util.KeyedWorkItem;
-import org.apache.beam.sdk.util.KeyedWorkItemCoder;
 import org.apache.beam.sdk.util.PropertyNames;
 import org.apache.beam.sdk.util.WindowedValue;
 
@@ -90,17 +90,15 @@ public class SingletonKeyedWorkItemCoder<K, ElemT>
                      OutputStream outStream,
                      Context context)
       throws CoderException, IOException {
-    Context nestedContext = context.nested();
-    keyCoder.encode(value.key(), outStream, nestedContext);
-    valueCoder.encode(value.value, outStream, nestedContext);
+    keyCoder.encode(value.key(), outStream, context.nested());
+    valueCoder.encode(value.value, outStream, context);
   }
 
   @Override
   public SingletonKeyedWorkItem<K, ElemT> decode(InputStream inStream, Context context)
       throws CoderException, IOException {
-    Context nestedContext = context.nested();
-    K key = keyCoder.decode(inStream, nestedContext);
-    WindowedValue<ElemT> value = valueCoder.decode(inStream, nestedContext);
+    K key = keyCoder.decode(inStream, context.nested());
+    WindowedValue<ElemT> value = valueCoder.decode(inStream, context);
     return new SingletonKeyedWorkItem<>(key, value);
   }
 

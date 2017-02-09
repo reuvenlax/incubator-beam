@@ -18,10 +18,13 @@
 package org.apache.beam.runners.flink.translation.functions;
 
 import java.util.Map;
+import org.apache.beam.runners.core.DoFnAdapters;
+import org.apache.beam.runners.core.OldDoFn;
 import org.apache.beam.runners.flink.translation.utils.SerializedPipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptions;
-import org.apache.beam.sdk.transforms.OldDoFn;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.join.RawUnionValue;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.util.WindowingStrategy;
 import org.apache.beam.sdk.values.PCollectionView;
@@ -54,16 +57,17 @@ public class FlinkMultiOutputDoFnFunction<InputT, OutputT>
   private final WindowingStrategy<?, ?> windowingStrategy;
 
   public FlinkMultiOutputDoFnFunction(
-      OldDoFn<InputT, OutputT> doFn,
+      DoFn<InputT, OutputT> doFn,
       WindowingStrategy<?, ?> windowingStrategy,
       Map<PCollectionView<?>, WindowingStrategy<?, ?>> sideInputs,
       PipelineOptions options,
       Map<TupleTag<?>, Integer> outputMap) {
-    this.doFn = doFn;
+    this.doFn = DoFnAdapters.toOldDoFn(doFn);
     this.serializedOptions = new SerializedPipelineOptions(options);
     this.outputMap = outputMap;
 
-    this.requiresWindowAccess = doFn instanceof OldDoFn.RequiresWindowAccess;
+    this.requiresWindowAccess =
+        DoFnSignatures.signatureForDoFn(doFn).processElement().observesWindow();
     this.hasSideInputs = !sideInputs.isEmpty();
     this.windowingStrategy = windowingStrategy;
     this.sideInputs = sideInputs;
@@ -74,22 +78,22 @@ public class FlinkMultiOutputDoFnFunction<InputT, OutputT>
       Iterable<WindowedValue<InputT>> values,
       Collector<WindowedValue<RawUnionValue>> out) throws Exception {
 
-    FlinkProcessContext<InputT, OutputT> context =
+    FlinkMultiOutputProcessContext<InputT, OutputT> context =
         new FlinkMultiOutputProcessContext<>(
             serializedOptions.getPipelineOptions(),
             getRuntimeContext(),
             doFn,
             windowingStrategy,
-            out,
-            outputMap,
-            sideInputs);
+            sideInputs, out,
+            outputMap
+        );
 
     this.doFn.startBundle(context);
 
     if (!requiresWindowAccess || hasSideInputs) {
       // we don't need to explode the windows
       for (WindowedValue<InputT> value : values) {
-        context = context.forWindowedValue(value);
+        context.setWindowedValue(value);
         doFn.processElement(context);
       }
     } else {
@@ -98,7 +102,7 @@ public class FlinkMultiOutputDoFnFunction<InputT, OutputT>
       // is in only one window
       for (WindowedValue<InputT> value : values) {
         for (WindowedValue<InputT> explodedValue : value.explodeWindows()) {
-          context = context.forWindowedValue(value);
+          context.setWindowedValue(value);
           doFn.processElement(context);
         }
       }
@@ -106,7 +110,7 @@ public class FlinkMultiOutputDoFnFunction<InputT, OutputT>
 
     // set the windowed value to null so that the special logic for outputting
     // in startBundle/finishBundle kicks in
-    context = context.forWindowedValue(null);
+    context.setWindowedValue(null);
     this.doFn.finishBundle(context);
   }
 

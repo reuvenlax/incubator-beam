@@ -274,7 +274,7 @@ public class TrafficRoutes {
   static class TrackSpeed extends
       PTransform<PCollection<KV<String, StationSpeed>>, PCollection<TableRow>> {
     @Override
-    public PCollection<TableRow> apply(PCollection<KV<String, StationSpeed>> stationSpeed) {
+    public PCollection<TableRow> expand(PCollection<KV<String, StationSpeed>> stationSpeed) {
       // Apply a GroupByKey transform to collect a list of all station
       // readings for a given route.
       PCollection<KV<String, Iterable<StationSpeed>>> timeGroup = stationSpeed.apply(
@@ -299,7 +299,7 @@ public class TrafficRoutes {
     }
 
     @Override
-    public PCollection<String> apply(PBegin begin) {
+    public PCollection<String> expand(PBegin begin) {
       return begin
           .apply(TextIO.Read.from(inputFile))
           .apply(ParDo.of(new ExtractTimestamps()));
@@ -311,7 +311,7 @@ public class TrafficRoutes {
   *
   * <p>Inherits standard configuration options.
   */
-  private interface TrafficRoutesOptions extends ExampleOptions, ExampleBigQueryTableOptions {
+  public interface TrafficRoutesOptions extends ExampleOptions, ExampleBigQueryTableOptions {
     @Description("Path of the file to read from")
     @Default.String("gs://apache-beam-samples/traffic_sensor/"
         + "Freeways-5Minaa2010-01-01_to_2010-02-15_test2.csv")

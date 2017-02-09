@@ -51,7 +51,7 @@ public class Count {
    * its input {@link PCollection}.
    */
   public static <T> Combine.Globally<T, Long> globally() {
-    return Combine.globally(new CountFn<T>()).named("Count.Globally");
+    return Combine.globally(new CountFn<T>());
   }
 
   /**
@@ -59,7 +59,7 @@ public class Count {
    * associated with each key of its input {@link PCollection}.
    */
   public static <K, V> Combine.PerKey<K, V, Long> perKey() {
-    return Combine.<K, V, Long>perKey(new CountFn<V>()).named("Count.PerKey");
+    return Combine.<K, V, Long>perKey(new CountFn<V>());
   }
 
   /**
@@ -103,7 +103,7 @@ public class Count {
     public PerElement() { }
 
     @Override
-    public PCollection<KV<T, Long>> apply(PCollection<T> input) {
+    public PCollection<KV<T, Long>> expand(PCollection<T> input) {
       return
           input
           .apply("Init", MapElements.via(new SimpleFunction<T, KV<T, Void>>() {

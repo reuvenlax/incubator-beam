@@ -21,7 +21,10 @@ package org.apache.beam.runners.direct;
 import static com.google.common.base.Preconditions.checkArgument;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Iterables;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.Write;
 import org.apache.beam.sdk.io.Write.Bound;
 import org.apache.beam.sdk.transforms.Count;
@@ -39,6 +42,7 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollection.IsBounded;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PDone;
+import org.apache.beam.sdk.values.TaggedPValue;
 import org.joda.time.Duration;
 
 /**
@@ -47,15 +51,23 @@ import org.joda.time.Duration;
  * of shards is the log base 10 of the number of input records, with up to 2 additional shards.
  */
 class WriteWithShardingFactory<InputT>
-    implements PTransformOverrideFactory<PCollection<InputT>, PDone, Write.Bound<InputT>> {
+    implements org.apache.beam.sdk.runners.PTransformOverrideFactory<
+        PCollection<InputT>, PDone, Write.Bound<InputT>> {
   static final int MAX_RANDOM_EXTRA_SHARDS = 3;
 
   @Override
-  public PTransform<PCollection<InputT>, PDone> override(Write.Bound<InputT> transform) {
+  public PTransform<PCollection<InputT>, PDone> getReplacementTransform(
+      Bound<InputT> transform) {
     if (transform.getNumShards() == 0) {
       return new DynamicallyReshardedWrite<>(transform);
     }
     return transform;
+  }
+
+  @Override
+  public PCollection<InputT> getInput(
+      List<TaggedPValue> inputs, Pipeline p) {
+    return (PCollection<InputT>) Iterables.getOnlyElement(inputs).getValue();
   }
 
   private static class DynamicallyReshardedWrite<T> extends PTransform<PCollection<T>, PDone> {
@@ -66,7 +78,7 @@ class WriteWithShardingFactory<InputT>
     }
 
     @Override
-    public PDone apply(PCollection<T> input) {
+    public PDone expand(PCollection<T> input) {
       checkArgument(IsBounded.BOUNDED == input.isBounded(),
           "%s can only be applied to a Bounded PCollection",
           getClass().getSimpleName());
@@ -92,7 +104,7 @@ class WriteWithShardingFactory<InputT>
       // without adding a new Write Transform Node, which would be overwritten the same way, leading
       // to an infinite recursion. We cannot modify the number of shards, because that is determined
       // at runtime.
-      return original.apply(resharded);
+      return original.expand(resharded);
     }
   }
 

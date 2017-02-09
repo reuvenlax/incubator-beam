@@ -20,6 +20,7 @@ package org.apache.beam.runners.direct;
 import static com.google.common.base.Preconditions.checkState;
 import static org.apache.beam.sdk.util.CoderUtils.encodeToByteArray;
 
+import com.google.common.collect.Iterables;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -27,6 +28,8 @@ import java.util.List;
 import java.util.Map;
 import org.apache.beam.runners.core.GroupByKeyViaGroupByKeyOnly;
 import org.apache.beam.runners.core.GroupByKeyViaGroupByKeyOnly.GroupByKeyOnly;
+import org.apache.beam.runners.core.KeyedWorkItem;
+import org.apache.beam.runners.core.KeyedWorkItems;
 import org.apache.beam.runners.direct.DirectGroupByKey.DirectGroupByKeyOnly;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
 import org.apache.beam.runners.direct.DirectRunner.UncommittedBundle;
@@ -36,8 +39,6 @@ import org.apache.beam.sdk.coders.CoderException;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.transforms.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
-import org.apache.beam.sdk.util.KeyedWorkItem;
-import org.apache.beam.sdk.util.KeyedWorkItems;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
@@ -102,7 +103,10 @@ class GroupByKeyOnlyEvaluatorFactory implements TransformEvaluatorFactory {
             DirectGroupByKeyOnly<K, V>> application) {
       this.evaluationContext = evaluationContext;
       this.application = application;
-      this.keyCoder = getKeyCoder(application.getInput().getCoder());
+      this.keyCoder =
+          getKeyCoder(
+              ((PCollection<KV<K, V>>) Iterables.getOnlyElement(application.getInputs()).getValue())
+                  .getCoder());
       this.groupingMap = new HashMap<>();
     }
 
@@ -143,7 +147,7 @@ class GroupByKeyOnlyEvaluatorFactory implements TransformEvaluatorFactory {
     }
 
     @Override
-    public TransformResult finishBundle() {
+    public TransformResult<KV<K, V>> finishBundle() {
       Builder resultBuilder = StepTransformResult.withoutHold(application);
       for (Map.Entry<GroupingKey<K>, List<WindowedValue<V>>> groupedEntry :
           groupingMap.entrySet()) {
@@ -152,7 +156,9 @@ class GroupByKeyOnlyEvaluatorFactory implements TransformEvaluatorFactory {
             KeyedWorkItems.elementsWorkItem(key, groupedEntry.getValue());
         UncommittedBundle<KeyedWorkItem<K, V>> bundle =
             evaluationContext.createKeyedBundle(
-                StructuralKey.of(key, keyCoder), application.getOutput());
+                StructuralKey.of(key, keyCoder),
+                (PCollection<KeyedWorkItem<K, V>>)
+                    Iterables.getOnlyElement(application.getOutputs()).getValue());
         bundle.add(WindowedValue.valueInGlobalWindow(groupedKv));
         resultBuilder.addOutput(bundle);
       }

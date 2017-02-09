@@ -78,8 +78,23 @@ public class CountingSource {
    */
   @Deprecated
   public static BoundedSource<Long> upTo(long numElements) {
-    checkArgument(numElements > 0, "numElements (%s) must be greater than 0", numElements);
+    checkArgument(numElements >= 0,
+        "numElements (%s) must be greater than or equal to 0",
+        numElements);
     return new BoundedCountingSource(0, numElements);
+  }
+
+  /**
+   * Creates a {@link BoundedSource} that will produce elements
+   * starting from {@code startIndex} (inclusive) to {@code endIndex} (exclusive).
+   * If {@code startIndex == endIndex}, then no elements will be produced.
+   */
+  static BoundedSource<Long> createSourceForSubrange(long startIndex, long endIndex) {
+    checkArgument(endIndex >= startIndex,
+        "endIndex (%s) must be greater than or equal to startIndex (%s)",
+        endIndex, startIndex);
+
+    return new BoundedCountingSource(startIndex, endIndex);
   }
 
   /**
@@ -170,11 +185,6 @@ public class CountingSource {
     @Override
     public OffsetBasedSource<Long> createSourceForSubrange(long start, long end) {
       return new BoundedCountingSource(start, end);
-    }
-
-    @Override
-    public boolean producesSortedKeys(PipelineOptions options) throws Exception {
-      return true;
     }
 
     @Override

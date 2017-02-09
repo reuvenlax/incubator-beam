@@ -17,6 +17,8 @@
  */
 package org.apache.beam.runners.direct;
 
+import static com.google.common.base.Preconditions.checkState;
+
 import com.google.auto.value.AutoValue;
 import com.google.common.base.MoreObjects;
 import com.google.common.base.Optional;
@@ -29,25 +31,25 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
+import org.apache.beam.runners.core.KeyedWorkItem;
+import org.apache.beam.runners.core.KeyedWorkItems;
+import org.apache.beam.runners.core.TimerInternals.TimerData;
 import org.apache.beam.runners.direct.DirectRunner.CommittedBundle;
 import org.apache.beam.runners.direct.WatermarkManager.FiredTimers;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.transforms.AppliedPTransform;
 import org.apache.beam.sdk.transforms.PTransform;
-import org.apache.beam.sdk.util.KeyedWorkItem;
-import org.apache.beam.sdk.util.KeyedWorkItems;
-import org.apache.beam.sdk.util.TimerInternals.TimerData;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.PCollection;
@@ -63,11 +65,11 @@ import org.slf4j.LoggerFactory;
 final class ExecutorServiceParallelExecutor implements PipelineExecutor {
   private static final Logger LOG = LoggerFactory.getLogger(ExecutorServiceParallelExecutor.class);
 
+  private final int targetParallelism;
   private final ExecutorService executorService;
 
-  private final Map<PValue, Collection<AppliedPTransform<?, ?, ?>>> valueToConsumers;
-  private final Set<PValue> keyedPValues;
-  private final RootInputProvider rootInputProvider;
+  private final DirectGraph graph;
+  private final RootProviderRegistry rootProviderRegistry;
   private final TransformEvaluatorRegistry registry;
   @SuppressWarnings("rawtypes")
   private final Map<Class<? extends PTransform>, Collection<ModelEnforcementFactory>>
@@ -99,38 +101,35 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
   private final AtomicLong outstandingWork = new AtomicLong();
 
   public static ExecutorServiceParallelExecutor create(
-      ExecutorService executorService,
-      Map<PValue, Collection<AppliedPTransform<?, ?, ?>>> valueToConsumers,
-      Set<PValue> keyedPValues,
-      RootInputProvider rootInputProvider,
+      int targetParallelism,
+      DirectGraph graph,
+      RootProviderRegistry rootProviderRegistry,
       TransformEvaluatorRegistry registry,
       @SuppressWarnings("rawtypes")
           Map<Class<? extends PTransform>, Collection<ModelEnforcementFactory>>
               transformEnforcements,
       EvaluationContext context) {
     return new ExecutorServiceParallelExecutor(
-        executorService,
-        valueToConsumers,
-        keyedPValues,
-        rootInputProvider,
+        targetParallelism,
+        graph,
+        rootProviderRegistry,
         registry,
         transformEnforcements,
         context);
   }
 
   private ExecutorServiceParallelExecutor(
-      ExecutorService executorService,
-      Map<PValue, Collection<AppliedPTransform<?, ?, ?>>> valueToConsumers,
-      Set<PValue> keyedPValues,
-      RootInputProvider rootInputProvider,
+      int targetParallelism,
+      DirectGraph graph,
+      RootProviderRegistry rootProviderRegistry,
       TransformEvaluatorRegistry registry,
       @SuppressWarnings("rawtypes")
       Map<Class<? extends PTransform>, Collection<ModelEnforcementFactory>> transformEnforcements,
       EvaluationContext context) {
-    this.executorService = executorService;
-    this.valueToConsumers = valueToConsumers;
-    this.keyedPValues = keyedPValues;
-    this.rootInputProvider = rootInputProvider;
+    this.targetParallelism = targetParallelism;
+    this.executorService = Executors.newFixedThreadPool(targetParallelism);
+    this.graph = graph;
+    this.rootProviderRegistry = rootProviderRegistry;
     this.registry = registry;
     this.transformEnforcements = transformEnforcements;
     this.evaluationContext = context;
@@ -142,7 +141,7 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
         CacheBuilder.newBuilder().weakValues().build(serialTransformExecutorServiceCacheLoader());
 
     this.allUpdates = new ConcurrentLinkedQueue<>();
-    this.visibleUpdates = new ArrayBlockingQueue<>(20);
+    this.visibleUpdates = new LinkedBlockingQueue<>();
 
     parallelExecutorService = TransformExecutorServices.parallel(executorService);
     defaultCompletionCallback =
@@ -162,10 +161,12 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
 
   @Override
   public void start(Collection<AppliedPTransform<?, ?, ?>> roots) {
+    int numTargetSplits = Math.max(3, targetParallelism);
     for (AppliedPTransform<?, ?, ?> root : roots) {
       ConcurrentLinkedQueue<CommittedBundle<?>> pending = new ConcurrentLinkedQueue<>();
       try {
-        Collection<CommittedBundle<?>> initialInputs = rootInputProvider.getInitialInputs(root, 1);
+        Collection<CommittedBundle<?>> initialInputs =
+            rootProviderRegistry.getInitialInputs(root, numTargetSplits);
         pending.addAll(initialInputs);
       } catch (Exception e) {
         throw UserCodeException.wrap(e);
@@ -180,7 +181,7 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
   @SuppressWarnings("unchecked")
   public void scheduleConsumption(
       AppliedPTransform<?, ?, ?> consumer,
-      @Nullable CommittedBundle<?> bundle,
+      CommittedBundle<?> bundle,
       CompletionCallback onComplete) {
     evaluateBundle(consumer, bundle, onComplete);
   }
@@ -222,7 +223,7 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
   }
 
   private boolean isKeyed(PValue pvalue) {
-    return keyedPValues.contains(pvalue);
+    return evaluationContext.isKeyed(pvalue);
   }
 
   private void scheduleConsumers(ExecutorUpdate update) {
@@ -263,11 +264,12 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
 
     @Override
     public final CommittedResult handleResult(
-        CommittedBundle<?> inputBundle, TransformResult result) {
+        CommittedBundle<?> inputBundle, TransformResult<?> result) {
       CommittedResult committedResult = evaluationContext.handleResult(inputBundle, timers, result);
       for (CommittedBundle<?> outputBundle : committedResult.getOutputs()) {
-        allUpdates.offer(ExecutorUpdate.fromBundle(outputBundle,
-            valueToConsumers.get(outputBundle.getPCollection())));
+        allUpdates.offer(
+            ExecutorUpdate.fromBundle(
+                outputBundle, graph.getPrimitiveConsumers(outputBundle.getPCollection())));
       }
       CommittedBundle<?> unprocessedInputs = committedResult.getUnprocessedInputs();
       if (unprocessedInputs != null && !Iterables.isEmpty(unprocessedInputs.getElements())) {
@@ -399,19 +401,7 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
           pendingUpdate = allUpdates.poll();
         }
         for (ExecutorUpdate update : updates) {
-          LOG.debug("Executor Update: {}", update);
-          if (update.getBundle().isPresent()) {
-            if (ExecutorState.ACTIVE == startingState
-                || (ExecutorState.PROCESSING == startingState
-                    && noWorkOutstanding)) {
-              scheduleConsumers(update);
-            } else {
-              allUpdates.offer(update);
-            }
-          } else if (update.getException().isPresent()) {
-            visibleUpdates.offer(VisibleExecutorUpdate.fromException(update.getException().get()));
-            exceptionThrown = true;
-          }
+          applyUpdate(noWorkOutstanding, startingState, update);
         }
         addWorkIfNecessary();
       } catch (InterruptedException e) {
@@ -434,6 +424,25 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
       }
     }
 
+    private void applyUpdate(
+        boolean noWorkOutstanding, ExecutorState startingState, ExecutorUpdate update) {
+      LOG.debug("Executor Update: {}", update);
+      if (update.getBundle().isPresent()) {
+        if (ExecutorState.ACTIVE == startingState
+            || (ExecutorState.PROCESSING == startingState
+                && noWorkOutstanding)) {
+          scheduleConsumers(update);
+        } else {
+          allUpdates.offer(update);
+        }
+      } else if (update.getException().isPresent()) {
+        checkState(
+            visibleUpdates.offer(VisibleExecutorUpdate.fromException(update.getException().get())),
+            "VisibleUpdates should always be able to receive an offered update");
+        exceptionThrown = true;
+      }
+    }
+
     /**
      * Fires any available timers.
      */
@@ -448,7 +457,9 @@ final class ExecutorServiceParallelExecutor implements PipelineExecutor {
               evaluationContext
                   .createKeyedBundle(
                       transformTimers.getKey(),
-                      (PCollection) transformTimers.getTransform().getInput())
+                      (PCollection)
+                          Iterables.getOnlyElement(transformTimers.getTransform().getInputs())
+                              .getValue())
                   .add(WindowedValue.valueInGlobalWindow(work))
                   .commit(evaluationContext.now());
           scheduleConsumption(

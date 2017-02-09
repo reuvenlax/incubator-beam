@@ -23,7 +23,6 @@ import static org.apache.beam.sdk.TestUtils.NO_LINES;
 import static org.apache.beam.sdk.TestUtils.NO_LINES_ARRAY;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 
@@ -38,7 +37,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
-import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.AtomicCoder;
 import org.apache.beam.sdk.coders.BigEndianIntegerCoder;
 import org.apache.beam.sdk.coders.Coder;
@@ -76,12 +74,12 @@ import org.junit.runners.JUnit4;
 @SuppressWarnings("unchecked")
 public class CreateTest {
   @Rule public final ExpectedException thrown = ExpectedException.none();
+  @Rule public final TestPipeline p = TestPipeline.create();
+
 
   @Test
   @Category(RunnableOnService.class)
   public void testCreate() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output =
         p.apply(Create.of(LINES));
 
@@ -93,8 +91,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateEmpty() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output =
         p.apply(Create.of(NO_LINES)
             .withCoder(StringUtf8Coder.of()));
@@ -106,7 +102,7 @@ public class CreateTest {
 
   @Test
   public void testCreateEmptyInfersCoder() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
 
     PCollection<Object> output =
         p.apply(Create.of());
@@ -126,8 +122,6 @@ public class CreateTest {
     thrown.expectMessage(
         Matchers.containsString("Unable to infer a coder"));
 
-    Pipeline p = TestPipeline.create();
-
     // Create won't infer a default coder in this case.
     p.apply(Create.of(new Record(), new Record2()));
 
@@ -137,8 +131,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateWithNullsAndValues() throws Exception {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output =
         p.apply(Create.of(null, "test1", null, "test2", null)
             .withCoder(SerializableCoder.of(String.class)));
@@ -150,8 +142,6 @@ public class CreateTest {
   @Test
   @Category(NeedsRunner.class)
   public void testCreateParameterizedType() throws Exception {
-    Pipeline p = TestPipeline.create();
-
     PCollection<TimestampedValue<String>> output =
         p.apply(Create.of(
             TimestampedValue.of("a", new Instant(0)),
@@ -216,7 +206,6 @@ public class CreateTest {
     Create.Values<UnserializableRecord> create =
         Create.of(elements).withCoder(new UnserializableRecord.UnserializableRecordCoder());
 
-    TestPipeline p = TestPipeline.create();
     PAssert.that(p.apply(create))
         .containsInAnyOrder(
             new UnserializableRecord("foo"),
@@ -235,8 +224,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateTimestamped() {
-    Pipeline p = TestPipeline.create();
-
     List<TimestampedValue<String>> data = Arrays.asList(
         TimestampedValue.of("a", new Instant(1L)),
         TimestampedValue.of("b", new Instant(2L)),
@@ -254,8 +241,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateTimestampedEmpty() {
-    Pipeline p = TestPipeline.create();
-
     PCollection<String> output = p
         .apply(Create.timestamped(new ArrayList<TimestampedValue<String>>())
             .withCoder(StringUtf8Coder.of()));
@@ -266,7 +251,7 @@ public class CreateTest {
 
   @Test
   public void testCreateTimestampedEmptyInfersCoder() {
-    Pipeline p = TestPipeline.create();
+    p.enableAbandonedNodeEnforcement(false);
 
     PCollection<Object> output = p
         .apply(Create.timestamped());
@@ -279,8 +264,6 @@ public class CreateTest {
     thrown.expect(RuntimeException.class);
     thrown.expectMessage(
         Matchers.containsString("Unable to infer a coder"));
-
-    Pipeline p = TestPipeline.create();
 
     // Create won't infer a default coder in this case.
     PCollection<Record> c = p.apply(Create.timestamped(
@@ -295,7 +278,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateWithVoidType() throws Exception {
-    Pipeline p = TestPipeline.create();
     PCollection<Void> output = p.apply(Create.of((Void) null, (Void) null));
     PAssert.that(output).containsInAnyOrder((Void) null, (Void) null);
     p.run();
@@ -304,8 +286,6 @@ public class CreateTest {
   @Test
   @Category(RunnableOnService.class)
   public void testCreateWithKVVoidType() throws Exception {
-    Pipeline p = TestPipeline.create();
-
     PCollection<KV<Void, Void>> output = p.apply(Create.of(
         KV.of((Void) null, (Void) null),
         KV.of((Void) null, (Void) null)));
@@ -363,13 +343,6 @@ public class CreateTest {
     PipelineOptions options = PipelineOptionsFactory.create();
     List<? extends BoundedSource<Integer>> splitSources = source.splitIntoBundles(12, options);
     SourceTestUtils.assertSourcesEqualReferenceSource(source, splitSources, options);
-  }
-
-  @Test
-  public void testSourceDoesNotProduceSortedKeys() throws Exception {
-    CreateSource<String> source =
-        CreateSource.fromIterable(ImmutableList.of("spam", "ham", "eggs"), StringUtf8Coder.of());
-    assertThat(source.producesSortedKeys(PipelineOptionsFactory.create()), is(false));
   }
 
   @Test

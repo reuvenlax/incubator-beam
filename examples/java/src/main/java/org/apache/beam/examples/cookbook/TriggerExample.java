@@ -75,8 +75,8 @@ import org.joda.time.Instant;
  *
  * <p>Before running this example, it will be useful to familiarize yourself with Beam triggers
  * and understand the concept of 'late data',
- * See: <a href="http://beam.incubator.apache.org/use/walkthroughs/">
- * http://beam.incubator.apache.org/use/walkthroughs/</a>
+ * See: <a href="http://beam.apache.org/use/walkthroughs/">
+ * http://beam.apache.org/use/walkthroughs/</a>
  *
  * <p>The example is configured to use the default BigQuery table from the example common package
  * (there are no defaults for a general Beam pipeline).
@@ -171,7 +171,7 @@ public class TriggerExample {
     }
 
     @Override
-    public PCollectionList<TableRow> apply(PCollection<KV<String, Integer>> flowInfo) {
+    public PCollectionList<TableRow> expand(PCollection<KV<String, Integer>> flowInfo) {
 
       // Concept #1: The default triggering behavior
       // By default Beam uses a trigger which fires when the watermark has passed the end of the
@@ -332,7 +332,7 @@ public class TriggerExample {
     }
 
     @Override
-    public PCollection<TableRow> apply(PCollection<KV<String, Integer>> flowInfo) {
+    public PCollection<TableRow> expand(PCollection<KV<String, Integer>> flowInfo) {
       PCollection<KV<String, Iterable<Integer>>> flowPerFreeway = flowInfo
           .apply(GroupByKey.<String, Integer>create());
 

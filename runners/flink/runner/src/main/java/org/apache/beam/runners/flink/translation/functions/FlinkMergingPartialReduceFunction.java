@@ -24,14 +24,14 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import org.apache.beam.runners.flink.OldPerKeyCombineFnRunner;
+import org.apache.beam.runners.flink.OldPerKeyCombineFnRunners;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.CombineFnBase;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.IntervalWindow;
 import org.apache.beam.sdk.transforms.windowing.OutputTimeFn;
 import org.apache.beam.sdk.transforms.windowing.PaneInfo;
-import org.apache.beam.sdk.util.PerKeyCombineFnRunner;
-import org.apache.beam.sdk.util.PerKeyCombineFnRunners;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.util.WindowingStrategy;
 import org.apache.beam.sdk.values.KV;
@@ -60,17 +60,17 @@ public class FlinkMergingPartialReduceFunction<K, InputT, AccumT, W extends Inte
       Iterable<WindowedValue<KV<K, InputT>>> elements,
       Collector<WindowedValue<KV<K, AccumT>>> out) throws Exception {
 
-    FlinkProcessContext<KV<K, InputT>, KV<K, AccumT>> processContext =
-        new FlinkProcessContext<>(
+    FlinkSingleOutputProcessContext<KV<K, InputT>, KV<K, AccumT>> processContext =
+        new FlinkSingleOutputProcessContext<>(
             serializedOptions.getPipelineOptions(),
             getRuntimeContext(),
             doFn,
             windowingStrategy,
-            out,
-            sideInputs);
+            sideInputs, out
+        );
 
-    PerKeyCombineFnRunner<K, InputT, AccumT, ?> combineFnRunner =
-        PerKeyCombineFnRunners.create(combineFn);
+    OldPerKeyCombineFnRunner<K, InputT, AccumT, ?> combineFnRunner =
+        OldPerKeyCombineFnRunners.create(combineFn);
 
     @SuppressWarnings("unchecked")
     OutputTimeFn<? super BoundedWindow> outputTimeFn =
@@ -109,7 +109,7 @@ public class FlinkMergingPartialReduceFunction<K, InputT, AccumT, W extends Inte
     IntervalWindow currentWindow =
         (IntervalWindow) Iterables.getOnlyElement(currentValue.getWindows());
     InputT firstValue = currentValue.getValue().getValue();
-    processContext = processContext.forWindowedValue(currentValue);
+    processContext.setWindowedValue(currentValue);
     AccumT accumulator = combineFnRunner.createAccumulator(key, processContext);
     accumulator = combineFnRunner.addInput(key, accumulator, firstValue, processContext);
 
@@ -125,7 +125,7 @@ public class FlinkMergingPartialReduceFunction<K, InputT, AccumT, W extends Inte
         // continue accumulating and merge windows
 
         InputT value = nextValue.getValue().getValue();
-        processContext = processContext.forWindowedValue(nextValue);
+        processContext.setWindowedValue(nextValue);
         accumulator = combineFnRunner.addInput(key, accumulator, value, processContext);
 
         windowTimestamp = outputTimeFn.combine(
@@ -143,7 +143,7 @@ public class FlinkMergingPartialReduceFunction<K, InputT, AccumT, W extends Inte
 
         currentWindow = nextWindow;
         InputT value = nextValue.getValue().getValue();
-        processContext = processContext.forWindowedValue(nextValue);
+        processContext.setWindowedValue(nextValue);
         accumulator = combineFnRunner.createAccumulator(key, processContext);
         accumulator = combineFnRunner.addInput(key, accumulator, value, processContext);
         windowTimestamp = outputTimeFn.assignOutputTime(nextValue.getTimestamp(), currentWindow);

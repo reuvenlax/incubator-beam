@@ -20,7 +20,7 @@ package org.apache.beam.sdk.util;
 
 import static org.junit.Assert.assertEquals;
 
-import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.Credentials;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -42,6 +42,7 @@ import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 import org.apache.beam.sdk.util.PubsubClient.IncomingMessage;
 import org.apache.beam.sdk.util.PubsubClient.OutgoingMessage;
@@ -52,7 +53,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.Mockito;
 
 /**
  * Tests for PubsubGrpcClient.
@@ -60,7 +60,7 @@ import org.mockito.Mockito;
 @RunWith(JUnit4.class)
 public class PubsubGrpcClientTest {
   private ManagedChannel inProcessChannel;
-  private GoogleCredentials mockCredentials;
+  private Credentials testCredentials;
 
   private PubsubClient client;
   private String channelName;
@@ -77,14 +77,16 @@ public class PubsubGrpcClientTest {
   private static final String DATA = "testData";
   private static final String RECORD_ID = "testRecordId";
   private static final String ACK_ID = "testAckId";
+  private static final Map<String, String> ATTRIBUTES =
+          ImmutableMap.<String, String>builder().put("a", "b").put("c", "d").build();
 
   @Before
   public void setup() {
     channelName = String.format("%s-%s",
         PubsubGrpcClientTest.class.getName(), ThreadLocalRandom.current().nextInt());
     inProcessChannel = InProcessChannelBuilder.forName(channelName).directExecutor().build();
-    mockCredentials = Mockito.mock(GoogleCredentials.class);
-    client = new PubsubGrpcClient(TIMESTAMP_LABEL, ID_LABEL, 10, inProcessChannel, mockCredentials);
+    testCredentials = new TestCredential();
+    client = new PubsubGrpcClient(TIMESTAMP_LABEL, ID_LABEL, 10, inProcessChannel, testCredentials);
   }
 
   @After
@@ -112,6 +114,7 @@ public class PubsubGrpcClientTest {
                      .setData(
                          ByteString.copyFrom(DATA.getBytes()))
                      .setPublishTime(timestamp)
+                     .putAllAttributes(ATTRIBUTES)
                      .putAllAttributes(
                          ImmutableMap.of(TIMESTAMP_LABEL,
                                          String.valueOf(MESSAGE_TIME),
@@ -161,6 +164,7 @@ public class PubsubGrpcClientTest {
     PubsubMessage expectedPubsubMessage =
         PubsubMessage.newBuilder()
                      .setData(ByteString.copyFrom(DATA.getBytes()))
+                     .putAllAttributes(ATTRIBUTES)
                      .putAllAttributes(
                          ImmutableMap.of(TIMESTAMP_LABEL, String.valueOf(MESSAGE_TIME),
                                          ID_LABEL, RECORD_ID))
@@ -191,7 +195,8 @@ public class PubsubGrpcClientTest {
         .build()
         .start();
     try {
-      OutgoingMessage actualMessage = new OutgoingMessage(DATA.getBytes(), MESSAGE_TIME, RECORD_ID);
+      OutgoingMessage actualMessage = new OutgoingMessage(
+              DATA.getBytes(), ATTRIBUTES, MESSAGE_TIME, RECORD_ID);
       int n = client.publish(TOPIC, ImmutableList.of(actualMessage));
       assertEquals(1, n);
       assertEquals(expectedRequest, Iterables.getOnlyElement(requestsReceived));

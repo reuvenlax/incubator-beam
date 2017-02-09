@@ -20,8 +20,11 @@ package org.apache.beam.sdk.io.jdbc;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.io.PrintWriter;
 import java.io.Serializable;
+import java.io.StringWriter;
 import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -45,6 +48,7 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
@@ -54,23 +58,56 @@ import org.slf4j.LoggerFactory;
  * Test on the JdbcIO.
  */
 public class JdbcIOTest implements Serializable {
-  private static final Logger LOGGER = LoggerFactory.getLogger(JdbcIOTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(JdbcIOTest.class);
 
   private static NetworkServerControl derbyServer;
   private static ClientDataSource dataSource;
 
+  private static int port;
+
+  @Rule
+  public final transient TestPipeline pipeline = TestPipeline.create();
+
   @BeforeClass
   public static void startDatabase() throws Exception {
+    ServerSocket socket = new ServerSocket(0);
+    port = socket.getLocalPort();
+    socket.close();
+
+    LOG.info("Starting Derby database on {}", port);
+
     System.setProperty("derby.stream.error.file", "target/derby.log");
 
-    derbyServer = new NetworkServerControl(InetAddress.getByName("localhost"), 1527);
-    derbyServer.start(null);
+    derbyServer = new NetworkServerControl(InetAddress.getByName("localhost"), port);
+    StringWriter out = new StringWriter();
+    derbyServer.start(new PrintWriter(out));
+    boolean started = false;
+    int count = 0;
+    // Use two different methods to detect when server is started:
+    // 1) Check the server stdout for the "started" string
+    // 2) wait up to 15 seconds for the derby server to start based on a ping
+    // on faster machines and networks, this may return very quick, but on slower
+    // networks where the DNS lookups are slow, this may take a little time
+    while (!started && count < 30) {
+      if (out.toString().contains("started")) {
+        started = true;
+      } else {
+        count++;
+        Thread.sleep(500);
+        try {
+          derbyServer.ping();
+          started = true;
+        } catch (Throwable t) {
+          //ignore, still trying to start
+        }
+      }
+    }
 
     dataSource = new ClientDataSource();
     dataSource.setCreateDatabase("create");
     dataSource.setDatabaseName("target/beam");
     dataSource.setServerName("localhost");
-    dataSource.setPortNumber(1527);
+    dataSource.setPortNumber(port);
 
     try (Connection connection = dataSource.getConnection()) {
       try (Statement statement = connection.createStatement()) {
@@ -129,7 +166,7 @@ public class JdbcIOTest implements Serializable {
   public void testDataSourceConfigurationDriverAndUrl() throws Exception {
     JdbcIO.DataSourceConfiguration config = JdbcIO.DataSourceConfiguration.create(
         "org.apache.derby.jdbc.ClientDriver",
-        "jdbc:derby://localhost:1527/target/beam");
+        "jdbc:derby://localhost:" + port + "/target/beam");
     try (Connection conn = config.getConnection()) {
       assertTrue(conn.isValid(0));
     }
@@ -139,7 +176,7 @@ public class JdbcIOTest implements Serializable {
   public void testDataSourceConfigurationUsernameAndPassword() throws Exception {
     JdbcIO.DataSourceConfiguration config = JdbcIO.DataSourceConfiguration.create(
         "org.apache.derby.jdbc.ClientDriver",
-        "jdbc:derby://localhost:1527/target/beam")
+        "jdbc:derby://localhost:" + port + "/target/beam")
         .withUsername("sa")
         .withPassword("sa");
     try (Connection conn = config.getConnection()) {
@@ -151,7 +188,7 @@ public class JdbcIOTest implements Serializable {
   public void testDataSourceConfigurationNullPassword() throws Exception {
     JdbcIO.DataSourceConfiguration config = JdbcIO.DataSourceConfiguration.create(
         "org.apache.derby.jdbc.ClientDriver",
-        "jdbc:derby://localhost:1527/target/beam")
+        "jdbc:derby://localhost:" + port + "/target/beam")
         .withUsername("sa")
         .withPassword(null);
     try (Connection conn = config.getConnection()) {
@@ -163,7 +200,7 @@ public class JdbcIOTest implements Serializable {
   public void testDataSourceConfigurationNullUsernameAndPassword() throws Exception {
     JdbcIO.DataSourceConfiguration config = JdbcIO.DataSourceConfiguration.create(
         "org.apache.derby.jdbc.ClientDriver",
-        "jdbc:derby://localhost:1527/target/beam")
+        "jdbc:derby://localhost:" + port + "/target/beam")
         .withUsername(null)
         .withPassword(null);
     try (Connection conn = config.getConnection()) {
@@ -174,7 +211,6 @@ public class JdbcIOTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void testRead() throws Exception {
-    TestPipeline pipeline = TestPipeline.create();
 
     PCollection<KV<String, Integer>> output = pipeline.apply(
         JdbcIO.<KV<String, Integer>>read()
@@ -212,7 +248,6 @@ public class JdbcIOTest implements Serializable {
    @Test
    @Category(NeedsRunner.class)
    public void testReadWithSingleStringParameter() throws Exception {
-     TestPipeline pipeline = TestPipeline.create();
 
      PCollection<KV<String, Integer>> output = pipeline.apply(
              JdbcIO.<KV<String, Integer>>read()
@@ -245,7 +280,6 @@ public class JdbcIOTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void testWrite() throws Exception {
-    TestPipeline pipeline = TestPipeline.create();
 
     ArrayList<KV<Integer, String>> data = new ArrayList<>();
     for (int i = 0; i < 1000; i++) {
@@ -256,7 +290,7 @@ public class JdbcIOTest implements Serializable {
         .apply(JdbcIO.<KV<Integer, String>>write()
             .withDataSourceConfiguration(JdbcIO.DataSourceConfiguration.create(
                 "org.apache.derby.jdbc.ClientDriver",
-                "jdbc:derby://localhost:1527/target/beam"))
+                "jdbc:derby://localhost:" + port + "/target/beam"))
             .withStatement("insert into BEAM values(?, ?)")
             .withPreparedStatementSetter(new JdbcIO.PreparedStatementSetter<KV<Integer, String>>() {
               public void setParameters(KV<Integer, String> element, PreparedStatement statement)
@@ -283,13 +317,12 @@ public class JdbcIOTest implements Serializable {
   @Test
   @Category(NeedsRunner.class)
   public void testWriteWithEmptyPCollection() throws Exception {
-    TestPipeline pipeline = TestPipeline.create();
 
     pipeline.apply(Create.of(new ArrayList<KV<Integer, String>>()))
         .apply(JdbcIO.<KV<Integer, String>>write()
             .withDataSourceConfiguration(JdbcIO.DataSourceConfiguration.create(
                 "org.apache.derby.jdbc.ClientDriver",
-                "jdbc:derby://localhost:1527/target/beam"))
+                "jdbc:derby://localhost:" + port + "/target/beam"))
             .withStatement("insert into BEAM values(?, ?)")
             .withPreparedStatementSetter(new JdbcIO.PreparedStatementSetter<KV<Integer, String>>() {
               public void setParameters(KV<Integer, String> element, PreparedStatement statement)

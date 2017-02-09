@@ -19,28 +19,18 @@
 package org.apache.beam.runners.spark.coders;
 
 import com.esotericsoftware.kryo.Kryo;
-import de.javakaffee.kryoserializers.UnmodifiableCollectionsSerializer;
-import de.javakaffee.kryoserializers.guava.ImmutableListSerializer;
-import de.javakaffee.kryoserializers.guava.ImmutableMapSerializer;
-import de.javakaffee.kryoserializers.guava.ImmutableMultimapSerializer;
-import de.javakaffee.kryoserializers.guava.ImmutableSetSerializer;
-import de.javakaffee.kryoserializers.guava.ReverseListSerializer;
+import org.apache.beam.runners.spark.io.MicrobatchSource;
 import org.apache.spark.serializer.KryoRegistrator;
 
 
 /**
- * Custom {@link com.esotericsoftware.kryo.Serializer}s for Beam's Spark runner needs.
+ * Custom {@link KryoRegistrator}s for Beam's Spark runner needs.
  */
 public class BeamSparkRunnerRegistrator implements KryoRegistrator {
 
   @Override
   public void registerClasses(Kryo kryo) {
-    UnmodifiableCollectionsSerializer.registerSerializers(kryo);
-    // Guava
-    ImmutableListSerializer.registerSerializers(kryo);
-    ImmutableSetSerializer.registerSerializers(kryo);
-    ImmutableMapSerializer.registerSerializers(kryo);
-    ImmutableMultimapSerializer.registerSerializers(kryo);
-    ReverseListSerializer.registerSerializers(kryo);
+    // MicrobatchSource is serialized as data and may not be Kryo-serializable.
+    kryo.register(MicrobatchSource.class, new StatelessJavaSerializer());
   }
 }

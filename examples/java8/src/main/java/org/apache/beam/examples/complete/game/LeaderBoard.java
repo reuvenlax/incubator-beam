@@ -27,6 +27,7 @@ import org.apache.beam.examples.complete.game.utils.WriteToBigQuery;
 import org.apache.beam.examples.complete.game.utils.WriteWindowedToBigQuery;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.coders.StringUtf8Coder;
 import org.apache.beam.sdk.io.PubsubIO;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
@@ -120,12 +121,10 @@ public class LeaderBoard extends HourlyTeamScore {
     Integer getAllowedLateness();
     void setAllowedLateness(Integer value);
 
-    @Override
     @Description("Prefix used for the BigQuery table names")
     @Default.String("leaderboard")
-    String getTableName();
-    @Override
-    void setTableName(String value);
+    String getLeaderBoardTableName();
+    void setLeaderBoardTableName(String value);
   }
 
   /**
@@ -192,7 +191,9 @@ public class LeaderBoard extends HourlyTeamScore {
     // Read game events from Pub/Sub using custom timestamps, which are extracted from the pubsub
     // data elements, and parse the data.
     PCollection<GameActionInfo> gameEvents = pipeline
-        .apply(PubsubIO.Read.timestampLabel(TIMESTAMP_ATTRIBUTE).topic(options.getTopic()))
+        .apply(PubsubIO.<String>read()
+            .timestampLabel(TIMESTAMP_ATTRIBUTE).topic(options.getTopic())
+            .withCoder(StringUtf8Coder.of()))
         .apply("ParseGameEvent", ParDo.of(new ParseEventFn()));
 
     gameEvents.apply("CalculateTeamScores",
@@ -202,7 +203,7 @@ public class LeaderBoard extends HourlyTeamScore {
         // Write the results to BigQuery.
         .apply("WriteTeamScoreSums",
                new WriteWindowedToBigQuery<KV<String, Integer>>(
-                  options.getTableName() + "_team", configureWindowedTableWrite()));
+                  options.getLeaderBoardTableName() + "_team", configureWindowedTableWrite()));
     gameEvents
         .apply(
             "CalculateUserScores",
@@ -211,7 +212,7 @@ public class LeaderBoard extends HourlyTeamScore {
         .apply(
             "WriteUserScoreSums",
             new WriteToBigQuery<KV<String, Integer>>(
-                options.getTableName() + "_user", configureGlobalWindowBigQueryWrite()));
+                options.getLeaderBoardTableName() + "_user", configureGlobalWindowBigQueryWrite()));
 
     // Run the pipeline and wait for the pipeline to finish; capture cancellation requests from the
     // command line.
@@ -236,7 +237,7 @@ public class LeaderBoard extends HourlyTeamScore {
     }
 
     @Override
-    public PCollection<KV<String, Integer>> apply(PCollection<GameActionInfo> infos) {
+    public PCollection<KV<String, Integer>> expand(PCollection<GameActionInfo> infos) {
       return infos.apply("LeaderboardTeamFixedWindows",
           Window.<GameActionInfo>into(FixedWindows.of(teamWindowDuration))
               // We will get early (speculative) results as well as cumulative
@@ -269,7 +270,7 @@ public class LeaderBoard extends HourlyTeamScore {
     }
 
     @Override
-    public PCollection<KV<String, Integer>> apply(PCollection<GameActionInfo> input) {
+    public PCollection<KV<String, Integer>> expand(PCollection<GameActionInfo> input) {
       return input.apply("LeaderboardUserGlobalWindow",
           Window.<GameActionInfo>into(new GlobalWindows())
               // Get periodic results every ten minutes.

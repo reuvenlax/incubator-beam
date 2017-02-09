@@ -22,8 +22,8 @@ import java.util.Arrays;
 import java.util.List;
 import org.apache.beam.examples.complete.game.UserScore.GameActionInfo;
 import org.apache.beam.examples.complete.game.UserScore.ParseEventFn;
-import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.RunnableOnService;
 import org.apache.beam.sdk.testing.TestPipeline;
@@ -35,6 +35,7 @@ import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.TypeDescriptors;
 import org.joda.time.Instant;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 import org.junit.runner.RunWith;
@@ -80,12 +81,13 @@ public class HourlyTeamScoreTest implements Serializable {
       KV.of("user18_BananaEmu", 1), KV.of("user18_ApricotCaneToad", 14)
     };
 
+  @Rule
+  public TestPipeline p = TestPipeline.create();
 
   /** Test the filtering. */
   @Test
   @Category(RunnableOnService.class)
   public void testUserScoresFilter() throws Exception {
-    Pipeline p = TestPipeline.create();
 
     final Instant startMinTimestamp = new Instant(1447965680000L);
 
@@ -108,4 +110,8 @@ public class HourlyTeamScoreTest implements Serializable {
     p.run().waitUntilFinish();
   }
 
+  @Test
+  public void testUserScoreOptions() {
+    PipelineOptionsFactory.as(HourlyTeamScore.Options.class);
+  }
 }
