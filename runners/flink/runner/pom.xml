@@ -59,6 +59,9 @@
                     org.apache.beam.sdk.testing.UsesAttemptedMetrics,
                     org.apache.beam.sdk.testing.UsesCommittedMetrics
                   </excludedGroups>
+                  <excludes>
+                    <exclude>org.apache.beam.sdk.io.TextIO</exclude>
+                  </excludes>
                   <parallel>none</parallel>
                   <failIfNoTests>true</failIfNoTests>
                   <dependenciesToScan>
@@ -92,6 +95,9 @@
                     org.apache.beam.sdk.testing.UsesAttemptedMetrics,
                     org.apache.beam.sdk.testing.UsesCommittedMetrics
                   </excludedGroups>
+                  <excludes>
+                    <exclude>org.apache.beam.sdk.io.TextIO</exclude>
+                  </excludes>
                   <parallel>none</parallel>
                   <failIfNoTests>true</failIfNoTests>
                   <dependenciesToScan>
