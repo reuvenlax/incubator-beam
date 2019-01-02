@@ -22,7 +22,9 @@ import static org.junit.Assert.assertTrue;
 
 import com.google.common.collect.Sets;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
 /** Tests for {@link FieldAccessDescriptor}. */
 public class FieldAccessDescriptorTest {
@@ -140,5 +142,109 @@ public class FieldAccessDescriptorTest {
     assertEquals(1, resolved.nestedFields().size());
     resolved = resolved.nestedFields().get(1);
     assertEquals(Sets.newHashSet(2), resolved.fieldIdsAccessed());
+  }
+
+  @Test
+  public void testParseAllFields() {
+    FieldAccessDescriptor fieldAccessDescriptor = FieldAccessDescriptor.withFieldNames("*");
+    assertTrue(fieldAccessDescriptor.resolve(SIMPLE_SCHEMA).allFields());
+  }
+
+  @Test
+  public void testParseFieldNames() {
+    FieldAccessDescriptor fieldAccessDescriptor = FieldAccessDescriptor.withFieldNames("field0")
+        .resolve(SIMPLE_SCHEMA);
+    assertEquals(Sets.newHashSet(0), fieldAccessDescriptor.fieldIdsAccessed());
+  }
+
+  @Test
+  public void testParseNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor = FieldAccessDescriptor.withFieldNames("field1.*")
+        .resolve(NESTED_SCHEMA2);
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    FieldAccessDescriptor nestedAccess = fieldAccessDescriptor.nestedFields().get(1);
+    assertTrue(nestedAccess.allFields());
+  }
+
+  @Test
+  public void testParsePartialAccessNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field1.field1.field2")
+        .resolve(NESTED_SCHEMA2);
+
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(1);
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(1);
+    assertEquals(Sets.newHashSet(2), fieldAccessDescriptor.fieldIdsAccessed());
+  }
+
+  @Test
+  public void testParseArrayNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field1[].field2")
+            .resolve(NESTED_ARRAY_SCHEMA);
+
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(1);
+    assertEquals(Sets.newHashSet(2), fieldAccessDescriptor.fieldIdsAccessed());
+  }
+
+  @Test
+  public void testParseMapNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field1{}.field2")
+            .resolve(NESTED_MAP_SCHEMA);
+
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(1);
+    assertEquals(Sets.newHashSet(2), fieldAccessDescriptor.fieldIdsAccessed());
+  }
+
+  private static final Schema DOUBLE_NESTED_ARRAY_SCHEMA =
+      Schema.builder()
+          .addArrayField("field0",
+              FieldType.array(FieldType.row(SIMPLE_SCHEMA)))
+          .build();
+  @Test
+  public void testParseDoubleArrayNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field0[][].field2")
+            .resolve(DOUBLE_NESTED_ARRAY_SCHEMA);
+
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(0);
+    assertEquals(Sets.newHashSet(2), fieldAccessDescriptor.fieldIdsAccessed());
+  }
+
+  @Rule
+  public ExpectedException thrown = ExpectedException.none();
+  @Test public void testInvalidQualifier() {
+    thrown.expect(IllegalArgumentException.class);
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field0[]{}.field2")
+            .resolve(DOUBLE_NESTED_ARRAY_SCHEMA);
+  }
+
+  private static final Schema NESTED_ARRAY_MAP_SCHEMA =
+      Schema.builder()
+          .addArrayField("field0",
+              FieldType.map(FieldType.STRING, FieldType.row(SIMPLE_SCHEMA)))
+          .build();
+  @Test
+  public void testParseArrayMapNestedField() {
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFieldNames("field0[]{}.field2")
+            .resolve(NESTED_ARRAY_MAP_SCHEMA);
+
+    assertTrue(fieldAccessDescriptor.fieldIdsAccessed().isEmpty());
+    assertEquals(1, fieldAccessDescriptor.nestedFields().size());
+    fieldAccessDescriptor = fieldAccessDescriptor.nestedFields().get(0);
+    assertEquals(Sets.newHashSet(2), fieldAccessDescriptor.fieldIdsAccessed());
   }
 }

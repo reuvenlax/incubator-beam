@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+
 apply plugin: org.apache.beam.gradle.BeamModulePlugin
 applyJavaNature(shadowClosure: DEFAULT_SHADOW_CLOSURE << {
   dependencies {
@@ -29,6 +30,17 @@ applyJavaNature(shadowClosure: DEFAULT_SHADOW_CLOSURE << {
   relocate "org.apache.commons", getJavaRelocatedPath("org.apache.commons")
 })
 applyAvroNature()
+applyAntlrNature()
+
+generateGrammarSource {
+  arguments += ["-visitor"]
+}
+
+sourceSets {
+  generated{
+    java.srcDir "${buildDir}/generated-src/antlr/main/java/"
+  }
+}
 
 description = "Apache Beam :: SDKs :: Java :: Core"
 ext.summary = """Beam SDK Java All provides a simple, Java-based
@@ -51,6 +63,7 @@ test {
 }
 
 dependencies {
+  antlr "org.antlr:antlr4:4.7"
   // Required to load constants from the model, e.g. max timestamp for global window
   shadow project(path: ":beam-model-pipeline", configuration: "shadow")
   compile library.java.guava

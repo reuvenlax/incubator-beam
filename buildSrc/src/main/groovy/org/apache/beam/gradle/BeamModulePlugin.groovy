@@ -614,7 +614,7 @@ class BeamModulePlugin implements Plugin<Project> {
           '-Xlint:all',
           '-Werror',
           '-XepDisableWarningsInGeneratedCode',
-          '-XepExcludedPaths:(.*/)?(build/generated.*avro-java|build/generated)/.*',
+          '-XepExcludedPaths:(.*/)?(build/generated-src|build/generated.*avro-java|build/generated)/.*',
           '-Xep:MutableConstantField:OFF' // Guava's immutable collections cannot appear on API surface.
         ]
         + (defaultLintSuppressions + configuration.disableLintWarnings).collect { "-Xlint:-${it}" })
@@ -1427,6 +1427,8 @@ artifactId=${project.name}
     // TODO: Decide whether this should be inlined into the one project that relies on it
     // or be left here.
     project.ext.applyAvroNature = { project.apply plugin: "com.commercehub.gradle.plugin.avro" }
+
+    project.ext.applyAntlrNature = { project.apply plugin: 'antlr' }
 
     // Creates a task to run the quickstart for a runner.
     // Releases version and URL, can be overriden for a RC release with
