@@ -175,7 +175,7 @@ public class SelectTest {
     PCollection<POJO1> pojos =
         pipeline
             .apply(Create.of(new POJO1()))
-            .apply(Select.fieldAccess(FieldAccessDescriptor.withAllFields()))
+            .apply(Select.fieldNames("*"))
             .apply(Convert.to(POJO1.class));
     PAssert.that(pojos).containsInAnyOrder(new POJO1());
     pipeline.run();
@@ -199,10 +199,7 @@ public class SelectTest {
     PCollection<POJO2NestedAll> pojos =
         pipeline
             .apply(Create.of(new POJO2()))
-            .apply(
-                Select.fieldAccess(
-                    FieldAccessDescriptor.create()
-                        .withNestedField("field2", FieldAccessDescriptor.withAllFields())))
+            .apply(Select.fieldNames("field2.*"))
             .apply(Convert.to(POJO2NestedAll.class));
     PAssert.that(pojos).containsInAnyOrder(new POJO2NestedAll());
     pipeline.run();
@@ -215,10 +212,7 @@ public class SelectTest {
         pipeline
             .apply(Create.of(new POJO2()))
             .apply(
-                Select.fieldAccess(
-                    FieldAccessDescriptor.create()
-                        .withNestedField(
-                            "field2", FieldAccessDescriptor.withFieldNames("field1", "field3"))))
+                Select.fieldNames("field2.field1", "field2.field3"))
             .apply(Convert.to(POJO2NestedPartial.class));
     PAssert.that(pojos).containsInAnyOrder(new POJO2NestedPartial());
     pipeline.run();

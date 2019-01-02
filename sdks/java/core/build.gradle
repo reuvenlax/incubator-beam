@@ -22,7 +22,6 @@ applyJavaNature(shadowClosure: DEFAULT_SHADOW_CLOSURE << {
   dependencies {
     include(dependency(library.java.protobuf_java))
     include(dependency(library.java.byte_buddy))
-    include(dependency("org.apache.commons:.*"))
   }
   relocate "com.google.thirdparty", getJavaRelocatedPath("com.google.thirdparty")
   relocate "com.google.protobuf", getJavaRelocatedPath("com.google.protobuf")
@@ -66,12 +65,14 @@ dependencies {
   antlr "org.antlr:antlr4:4.7"
   // Required to load constants from the model, e.g. max timestamp for global window
   shadow project(path: ":beam-model-pipeline", configuration: "shadow")
+ // compile library.java.antlr
   compile library.java.guava
   compile library.java.protobuf_java
   compile library.java.byte_buddy
   compile library.java.commons_compress
   compile library.java.commons_lang3
   compile library.java.guava_testlib
+  shadow library.java.antlr
   shadow library.java.jackson_core
   shadow library.java.jackson_annotations
   shadow library.java.jackson_databind

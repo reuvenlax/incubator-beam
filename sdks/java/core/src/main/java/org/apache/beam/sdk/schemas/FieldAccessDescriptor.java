@@ -24,6 +24,7 @@ import com.google.auto.value.AutoOneOf;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
@@ -74,7 +75,6 @@ public abstract class FieldAccessDescriptor implements Serializable {
         return AutoOneOf_FieldAccessDescriptor_FieldDescriptor_Qualifier.map(qualifier);
       }
     }
-
 
     @Nullable
     abstract String getFieldName();
@@ -157,9 +157,14 @@ public abstract class FieldAccessDescriptor implements Serializable {
    * specify recursive field access.
    */
   public static FieldAccessDescriptor withFieldNames(Iterable<String> fieldNames) {
+    List<FieldAccessDescriptor> fields = Lists.newArrayList();
+    for (String name : fieldNames) {
+      fields.add(FieldAccessDescriptorParser.parse(name));
+    }
+    /*
     List<FieldAccessDescriptor> fields = StreamSupport.stream(fieldNames.spliterator(), false)
         .map(FieldAccessDescriptorParser::parse)
-        .collect(Collectors.toList());
+        .collect(Collectors.toList());*/
     return union(fields);
   }
 

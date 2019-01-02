@@ -68,9 +68,7 @@ import org.apache.beam.sdk.values.Row;
  *
  * <pre>{@code
  * PCollection<UserEvent> events = readUserEvents();
- * PCollection<Row> rows = event.apply(Select.fieldAccess(FieldAccessDescriptor.create()
- *      .withNestedField("location",
- *          FieldAccessDescriptor.withAllFields())));
+ * PCollection<Row> rows = event.apply(Select.fieldNames("location.*"))
  * }</pre>
  */
 @Experimental(Kind.SCHEMAS)
