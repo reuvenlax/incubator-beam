@@ -24,7 +24,6 @@ import com.google.auto.value.AutoOneOf;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
@@ -33,10 +32,10 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 import javax.annotation.Nullable;
@@ -58,19 +57,28 @@ import org.apache.beam.sdk.schemas.Schema.TypeName;
 @AutoValue
 public abstract class FieldAccessDescriptor implements Serializable {
   @AutoValue
-  public abstract static class FieldDescriptor {
-    public static class ListQualifier {}
-    public static class MapQualifier {}
+  public abstract static class FieldDescriptor implements Serializable {
+    public static class ListQualifier implements Serializable {}
+
+    public static class MapQualifier implements Serializable {}
 
     @AutoOneOf(Qualifier.Kind.class)
-    public abstract static class Qualifier {
-      public enum Kind {LIST, MAP};
+    public abstract static class Qualifier implements Serializable {
+      public enum Kind {
+        LIST,
+        MAP
+      };
+
       public abstract Kind getKind();
+
       public abstract ListQualifier getList();
+
       public abstract MapQualifier getMap();
+
       public static Qualifier of(ListQualifier qualifier) {
         return AutoOneOf_FieldAccessDescriptor_FieldDescriptor_Qualifier.list(qualifier);
       }
+
       public static Qualifier of(MapQualifier qualifier) {
         return AutoOneOf_FieldAccessDescriptor_FieldDescriptor_Qualifier.map(qualifier);
       }
@@ -92,10 +100,14 @@ public abstract class FieldAccessDescriptor implements Serializable {
     @AutoValue.Builder
     abstract static class Builder {
       abstract Builder setFieldName(@Nullable String name);
+
       abstract Builder setFieldId(@Nullable Integer id);
+
       abstract Builder setQualifiers(List<Qualifier> qualifiers);
+
       abstract FieldDescriptor build();
     }
+
     abstract Builder toBuilder();
   }
 
@@ -157,14 +169,10 @@ public abstract class FieldAccessDescriptor implements Serializable {
    * specify recursive field access.
    */
   public static FieldAccessDescriptor withFieldNames(Iterable<String> fieldNames) {
-    List<FieldAccessDescriptor> fields = Lists.newArrayList();
-    for (String name : fieldNames) {
-      fields.add(FieldAccessDescriptorParser.parse(name));
-    }
-    /*
-    List<FieldAccessDescriptor> fields = StreamSupport.stream(fieldNames.spliterator(), false)
-        .map(FieldAccessDescriptorParser::parse)
-        .collect(Collectors.toList());*/
+    List<FieldAccessDescriptor> fields =
+        StreamSupport.stream(fieldNames.spliterator(), false)
+            .map(FieldAccessDescriptorParser::parse)
+            .collect(Collectors.toList());
     return union(fields);
   }
 
@@ -187,9 +195,10 @@ public abstract class FieldAccessDescriptor implements Serializable {
    * in a recursive {@link FieldAccessDescriptor}.
    */
   public static FieldAccessDescriptor withFieldIds(Iterable<Integer> ids) {
-    List<FieldDescriptor> fields = StreamSupport.stream(ids.spliterator(), false)
-        .map(n -> FieldDescriptor.builder().setFieldId(n).build())
-        .collect(Collectors.toList());
+    List<FieldDescriptor> fields =
+        StreamSupport.stream(ids.spliterator(), false)
+            .map(n -> FieldDescriptor.builder().setFieldId(n).build())
+            .collect(Collectors.toList());
     return withFields(fields);
   }
 
@@ -218,24 +227,26 @@ public abstract class FieldAccessDescriptor implements Serializable {
           throw new IllegalArgumentException("union doesn't support id fields.");
         }
         fieldsAccessed.add(field);
+        // We're already reading the entire field, so no need to specify nested fields.
+        nestedFieldsAccessed.removeAll(field);
       }
-      for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> nested
-          : fieldAccessDescriptor.getNestedFieldsAccessed().entrySet()) {
+      for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> nested :
+          fieldAccessDescriptor.getNestedFieldsAccessed().entrySet()) {
         FieldDescriptor field = nested.getKey();
         nestedFieldsAccessed.put(field, nested.getValue());
       }
     }
     FieldAccessDescriptor fieldAccessDescriptor = FieldAccessDescriptor.withFields(fieldsAccessed);
-    for (Map.Entry<FieldDescriptor, Collection<FieldAccessDescriptor>> entry
-        : nestedFieldsAccessed.asMap().entrySet()) {
+    for (Map.Entry<FieldDescriptor, Collection<FieldAccessDescriptor>> entry :
+        nestedFieldsAccessed.asMap().entrySet()) {
       if (fieldsAccessed.contains(entry.getKey())) {
         // We're already reading the entire field, so no need to specify nested fields.
         continue;
       }
       // If there are multiple subdescriptors for this field (e.g. a.b, a.c, a.d), union them
       // together and create a new nested field description.
-      fieldAccessDescriptor = fieldAccessDescriptor.withNestedField(
-          entry.getKey(), union(entry.getValue()));
+      fieldAccessDescriptor =
+          fieldAccessDescriptor.withNestedField(entry.getKey(), union(entry.getValue()));
     }
     return fieldAccessDescriptor;
   }
@@ -290,16 +301,17 @@ public abstract class FieldAccessDescriptor implements Serializable {
   }
 
   public Set<Integer> fieldIdsAccessed() {
-    return getFieldsAccessed().stream()
+    return getFieldsAccessed()
+        .stream()
         .map(FieldDescriptor::getFieldId)
         .collect(Collectors.toSet());
   }
 
   public Map<Integer, FieldAccessDescriptor> nestedFields() {
-    return getNestedFieldsAccessed().entrySet().stream()
-        .collect(Collectors.toMap(
-            f -> f.getKey().getFieldId(),
-            f -> f.getValue()));
+    return getNestedFieldsAccessed()
+        .entrySet()
+        .stream()
+        .collect(Collectors.toMap(f -> f.getKey().getFieldId(), f -> f.getValue()));
   }
 
   // After resolution, fields are always ordered by their field name.
@@ -328,7 +340,9 @@ public abstract class FieldAccessDescriptor implements Serializable {
     if (getFieldInsertionOrder()) {
       fields = Sets.newLinkedHashSet();
     } else {
-      fields = Sets.newTreeSet(Comparator.comparing(FieldDescriptor::getFieldId));
+      Function<FieldDescriptor, Integer> extract =
+          (Function<FieldDescriptor, Integer> & Serializable) FieldDescriptor::getFieldId;
+      fields = Sets.newTreeSet(Comparator.comparing(extract));
     }
 
     for (FieldDescriptor field : getFieldsAccessed()) {
@@ -361,22 +375,26 @@ public abstract class FieldAccessDescriptor implements Serializable {
     if (getFieldInsertionOrder()) {
       nestedFields = Maps.newLinkedHashMap();
     } else {
-      nestedFields = Maps.newTreeMap(Comparator.comparing(FieldDescriptor::getFieldId));
+      Function<FieldDescriptor, Integer> extract =
+          (Function<FieldDescriptor, Integer> & Serializable) FieldDescriptor::getFieldId;
+      nestedFields = Maps.newTreeMap(Comparator.comparing(extract));
     }
 
-    for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> entry
-        : getNestedFieldsAccessed().entrySet()) {
+    for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> entry :
+        getNestedFieldsAccessed().entrySet()) {
       FieldDescriptor fieldDescriptor = entry.getKey();
       FieldAccessDescriptor fieldAccessDescriptor = entry.getValue();
       validateFieldDescriptor(schema, fieldDescriptor);
       if (entry.getKey().getFieldId() == null) {
-        fieldDescriptor = fieldDescriptor.toBuilder()
-            .setFieldId(schema.indexOf(fieldDescriptor.getFieldName()))
-            .build();
+        fieldDescriptor =
+            fieldDescriptor
+                .toBuilder()
+                .setFieldId(schema.indexOf(fieldDescriptor.getFieldName()))
+                .build();
       }
 
       FieldType fieldType = schema.getField(fieldDescriptor.getFieldId()).getType();
-      while (fieldType.getTypeName().isCollectionType() ||  fieldType.getTypeName().isMapType()) {
+      while (fieldType.getTypeName().isCollectionType() || fieldType.getTypeName().isMapType()) {
         if (fieldType.getTypeName().isCollectionType()) {
           fieldType = fieldType.getCollectionElementType();
         } else if (fieldType.getTypeName().isMapType()) {
@@ -399,8 +417,10 @@ public abstract class FieldAccessDescriptor implements Serializable {
       }
     }
     // If qualifiers were specified, validate them.
-    Field field = (fieldId != null)
-        ? schema.getField(fieldId) : schema.getField(fieldDescriptor.getFieldName());
+    Field field =
+        (fieldId != null)
+            ? schema.getField(fieldId)
+            : schema.getField(fieldDescriptor.getFieldName());
     FieldType fieldType = field.getType();
     for (Qualifier qualifier : fieldDescriptor.getQualifiers()) {
       switch (qualifier.getKind()) {

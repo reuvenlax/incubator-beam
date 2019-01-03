@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.sdk.schemas;
 
 import com.google.common.base.Preconditions;
@@ -60,9 +59,11 @@ class FieldAccessDescriptorParser {
 
     @Override
     public FieldAccessDescriptor visitDotExpression(DotExpressionContext ctx) {
-      List<FieldAccessDescriptor> components = ctx.dotExpressionComponent().stream()
-          .map(dotE -> dotE.accept(this))
-          .collect(Collectors.toList());
+      List<FieldAccessDescriptor> components =
+          ctx.dotExpressionComponent()
+              .stream()
+              .map(dotE -> dotE.accept(this))
+              .collect(Collectors.toList());
 
       // Walk backwards through the list to build up the nested FieldAccessDescriptor.
       Preconditions.checkArgument(!components.isEmpty());
@@ -74,13 +75,16 @@ class FieldAccessDescriptorParser {
           fieldAccessDescriptor = FieldAccessDescriptor.withAllFields();
           continue;
         }
-        FieldDescriptor fieldAccessed = component.getFieldsAccessed().stream()
-            .findFirst()
-            .orElseThrow(IllegalArgumentException::new);
+        FieldDescriptor fieldAccessed =
+            component
+                .getFieldsAccessed()
+                .stream()
+                .findFirst()
+                .orElseThrow(IllegalArgumentException::new);
 
-        fieldAccessDescriptor = FieldAccessDescriptor
-            .withFields()
-            .withNestedField(fieldAccessed, fieldAccessDescriptor);
+        fieldAccessDescriptor =
+            FieldAccessDescriptor.withFields()
+                .withNestedField(fieldAccessed, fieldAccessDescriptor);
       }
       return fieldAccessDescriptor;
     }
@@ -90,16 +94,12 @@ class FieldAccessDescriptorParser {
       return ctx.qualifiedComponent().accept(this);
     }
 
-
     @Override
     public FieldAccessDescriptor visitSimpleIdentifier(SimpleIdentifierContext ctx) {
       FieldDescriptor field =
-          FieldDescriptor.builder()
-              .setFieldName(ctx.IDENTIFIER().getText())
-              .build();
+          FieldDescriptor.builder().setFieldName(ctx.IDENTIFIER().getText()).build();
       return FieldAccessDescriptor.withFields(field);
     }
-
 
     @Override
     public FieldAccessDescriptor visitWildcard(WildcardContext ctx) {
@@ -122,6 +122,7 @@ class FieldAccessDescriptorParser {
   public static class QualifierVisitor
       extends org.apache.beam.sdk.schemas.FieldSpecifierNotationBaseVisitor<FieldAccessDescriptor> {
     private final List<Qualifier> qualifiers = Lists.newArrayList();
+
     @Override
     public FieldAccessDescriptor visitArrayQualifierList(ArrayQualifierListContext ctx) {
       qualifiers.add(Qualifier.of(new ListQualifier()));

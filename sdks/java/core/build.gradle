@@ -22,6 +22,7 @@ applyJavaNature(shadowClosure: DEFAULT_SHADOW_CLOSURE << {
   dependencies {
     include(dependency(library.java.protobuf_java))
     include(dependency(library.java.byte_buddy))
+    include(dependency("org.apache.commons:.*"))
   }
   relocate "com.google.thirdparty", getJavaRelocatedPath("com.google.thirdparty")
   relocate "com.google.protobuf", getJavaRelocatedPath("com.google.protobuf")
