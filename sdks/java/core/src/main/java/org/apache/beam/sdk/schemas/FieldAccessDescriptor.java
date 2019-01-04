@@ -22,8 +22,10 @@ import static com.google.common.base.Preconditions.checkState;
 
 import com.google.auto.value.AutoOneOf;
 import com.google.auto.value.AutoValue;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
@@ -32,6 +34,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,6 +45,8 @@ import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.schemas.FieldAccessDescriptor.Builder;
+import org.apache.beam.sdk.schemas.FieldAccessDescriptor.FieldDescriptor.ListQualifier;
+import org.apache.beam.sdk.schemas.FieldAccessDescriptor.FieldDescriptor.MapQualifier;
 import org.apache.beam.sdk.schemas.FieldAccessDescriptor.FieldDescriptor.Qualifier;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
@@ -85,12 +90,12 @@ public abstract class FieldAccessDescriptor implements Serializable {
     }
 
     @Nullable
-    abstract String getFieldName();
+    public abstract String getFieldName();
 
     @Nullable
-    abstract Integer getFieldId();
+    public abstract Integer getFieldId();
 
-    abstract List<Qualifier> getQualifiers();
+    public abstract List<Qualifier> getQualifiers();
 
     static Builder builder() {
       return new AutoValue_FieldAccessDescriptor_FieldDescriptor.Builder()
@@ -214,7 +219,7 @@ public abstract class FieldAccessDescriptor implements Serializable {
   // containing named fields, not those containing ids.
   private static FieldAccessDescriptor union(
       Iterable<FieldAccessDescriptor> fieldAccessDescriptors) {
-    Set<FieldDescriptor> fieldsAccessed = Sets.newHashSet();
+    Set<FieldDescriptor> fieldsAccessed = Sets.newLinkedHashSet();
     Multimap<FieldDescriptor, FieldAccessDescriptor> nestedFieldsAccessed =
         ArrayListMultimap.create();
     for (FieldAccessDescriptor fieldAccessDescriptor : fieldAccessDescriptors) {
@@ -223,8 +228,8 @@ public abstract class FieldAccessDescriptor implements Serializable {
       }
 
       for (FieldDescriptor field : fieldAccessDescriptor.getFieldsAccessed()) {
-        if (field.getFieldId() != null) {
-          throw new IllegalArgumentException("union doesn't support id fields.");
+        if (field.getFieldName() == null) {
+          throw new IllegalArgumentException("union requires field names.");
         }
         fieldsAccessed.add(field);
         // We're already reading the entire field, so no need to specify nested fields.
@@ -307,7 +312,11 @@ public abstract class FieldAccessDescriptor implements Serializable {
         .collect(Collectors.toSet());
   }
 
-  public Map<Integer, FieldAccessDescriptor> nestedFields() {
+  public Map<FieldDescriptor, FieldAccessDescriptor> nestedFields() {
+    return getNestedFieldsAccessed();
+  }
+
+  public Map<Integer, FieldAccessDescriptor> nestedFieldsById() {
     return getNestedFieldsAccessed()
         .entrySet()
         .stream()
@@ -393,17 +402,29 @@ public abstract class FieldAccessDescriptor implements Serializable {
                 .build();
       }
 
+      // If there are nested arrays or maps, walk down them until we find the next row. If there
+      // are missing qualifiers, fill them in.
       FieldType fieldType = schema.getField(fieldDescriptor.getFieldId()).getType();
+      Iterator<Qualifier> qualifierIt = fieldDescriptor.getQualifiers().iterator();
+      List<Qualifier> qualifiers = Lists.newArrayList();
       while (fieldType.getTypeName().isCollectionType() || fieldType.getTypeName().isMapType()) {
+        Qualifier qualifier = qualifierIt.hasNext() ? qualifierIt.next() : null;
         if (fieldType.getTypeName().isCollectionType()) {
+          qualifier = (qualifier == null) ? Qualifier.of(new ListQualifier()) : qualifier;
+          Preconditions.checkArgument(qualifier.getKind().equals(Qualifier.Kind.LIST));
+          qualifiers.add(qualifier);
           fieldType = fieldType.getCollectionElementType();
         } else if (fieldType.getTypeName().isMapType()) {
+          qualifier = (qualifier == null) ? Qualifier.of(new MapQualifier()) : qualifier;
+          Preconditions.checkArgument(qualifier.getKind().equals(Qualifier.Kind.MAP));
+          qualifiers.add(qualifier);
           fieldType = fieldType.getMapValueType();
         }
       }
 
       fieldAccessDescriptor = fieldAccessDescriptor.resolve(getFieldSchema(fieldType));
-      nestedFields.put(fieldDescriptor, fieldAccessDescriptor);
+      nestedFields.put(
+          fieldDescriptor.toBuilder().setQualifiers(qualifiers).build(), fieldAccessDescriptor);
     }
 
     return nestedFields;
