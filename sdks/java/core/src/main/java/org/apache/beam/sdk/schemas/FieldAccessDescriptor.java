@@ -219,9 +219,10 @@ public abstract class FieldAccessDescriptor implements Serializable {
   // containing named fields, not those containing ids.
   private static FieldAccessDescriptor union(
       Iterable<FieldAccessDescriptor> fieldAccessDescriptors) {
-    Set<FieldDescriptor> fieldsAccessed = Sets.newLinkedHashSet();
-    Multimap<FieldDescriptor, FieldAccessDescriptor> nestedFieldsAccessed =
-        ArrayListMultimap.create();
+    // We want to dedup by field name only, so we can't use Set.
+    // TODO: once we support array slices, we need to look at more than field name.
+    Map<String, FieldDescriptor> fieldsAccessed = Maps.newLinkedHashMap();
+    Multimap<String, FieldAccessDescriptor> nestedFieldsAccessed = ArrayListMultimap.create();
     for (FieldAccessDescriptor fieldAccessDescriptor : fieldAccessDescriptors) {
       if (fieldAccessDescriptor.getAllFields()) {
         return FieldAccessDescriptor.withAllFields();
@@ -231,20 +232,21 @@ public abstract class FieldAccessDescriptor implements Serializable {
         if (field.getFieldName() == null) {
           throw new IllegalArgumentException("union requires field names.");
         }
-        fieldsAccessed.add(field);
+        fieldsAccessed.put(field.getFieldName(), field);
         // We're already reading the entire field, so no need to specify nested fields.
         nestedFieldsAccessed.removeAll(field);
       }
       for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> nested :
           fieldAccessDescriptor.getNestedFieldsAccessed().entrySet()) {
         FieldDescriptor field = nested.getKey();
-        nestedFieldsAccessed.put(field, nested.getValue());
+        nestedFieldsAccessed.put(field.getFieldName(), nested.getValue());
       }
     }
-    FieldAccessDescriptor fieldAccessDescriptor = FieldAccessDescriptor.withFields(fieldsAccessed);
-    for (Map.Entry<FieldDescriptor, Collection<FieldAccessDescriptor>> entry :
+    FieldAccessDescriptor fieldAccessDescriptor =
+        FieldAccessDescriptor.withFields(fieldsAccessed.values());
+    for (Map.Entry<String, Collection<FieldAccessDescriptor>> entry :
         nestedFieldsAccessed.asMap().entrySet()) {
-      if (fieldsAccessed.contains(entry.getKey())) {
+      if (fieldsAccessed.get(entry.getKey()) != null) {
         // We're already reading the entire field, so no need to specify nested fields.
         continue;
       }

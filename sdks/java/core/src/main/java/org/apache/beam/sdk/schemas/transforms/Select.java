@@ -104,8 +104,6 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
     return new Select<>(fieldAccessDescriptor);
   }
 
-  // TODO: Support Xpath or JsonPath as a way of describing fields.
-
   @Override
   public PCollection<Row> expand(PCollection<T> input) {
     Schema inputSchema = input.getSchema();
