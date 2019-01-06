@@ -131,7 +131,7 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
 
   // Currently we don't flatten selected nested fields.
   static Schema getOutputSchema(Schema inputSchema, FieldAccessDescriptor fieldAccessDescriptor) {
-    if (fieldAccessDescriptor.allFields()) {
+    if (fieldAccessDescriptor.getAllFields()) {
       return inputSchema;
     }
     Schema.Builder builder = new Schema.Builder();
@@ -140,7 +140,7 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
     }
 
     for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> nested :
-        fieldAccessDescriptor.nestedFields().entrySet()) {
+        fieldAccessDescriptor.getNestedFieldsAccessed().entrySet()) {
       FieldDescriptor fieldDescriptor = nested.getKey();
       Field field = inputSchema.getField(Preconditions.checkNotNull(fieldDescriptor.getFieldId()));
       FieldType outputType =
@@ -192,7 +192,7 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
       FieldAccessDescriptor fieldAccessDescriptor,
       Schema inputSchema,
       Schema outputSchema) {
-    if (fieldAccessDescriptor.allFields()) {
+    if (fieldAccessDescriptor.getAllFields()) {
       return input;
     }
 
@@ -203,7 +203,7 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
     }
 
     for (Map.Entry<FieldDescriptor, FieldAccessDescriptor> nested :
-        fieldAccessDescriptor.nestedFields().entrySet()) {
+        fieldAccessDescriptor.getNestedFieldsAccessed().entrySet()) {
       FieldDescriptor field = nested.getKey();
       String fieldName = inputSchema.nameOf(Preconditions.checkNotNull(field.getFieldId()));
       FieldType nestedInputType = inputSchema.getField(field.getFieldId()).getType();
@@ -235,7 +235,7 @@ public class Select<T> extends PTransform<PCollection<T>, PCollection<Row>> {
           row, fieldAccessDescriptor, inputType.getRowSchema(), outputType.getRowSchema());
     }
 
-    if (fieldAccessDescriptor.allFields()) {
+    if (fieldAccessDescriptor.getAllFields()) {
       // Since we are selecting all fields (and we do not yet support array slicing), short circuit.
       return value;
     }

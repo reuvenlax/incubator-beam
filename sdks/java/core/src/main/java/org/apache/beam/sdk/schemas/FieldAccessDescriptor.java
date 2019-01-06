@@ -61,12 +61,16 @@ import org.apache.beam.sdk.schemas.Schema.TypeName;
 @Experimental(Kind.SCHEMAS)
 @AutoValue
 public abstract class FieldAccessDescriptor implements Serializable {
+  /** Description of a single field. */
   @AutoValue
   public abstract static class FieldDescriptor implements Serializable {
+    /** Qualifier for a list selector. */
     public static class ListQualifier implements Serializable {}
 
+    /** Qualifier for a map selector. */
     public static class MapQualifier implements Serializable {}
 
+    /** OneOf union for a collection selector. */
     @AutoOneOf(Qualifier.Kind.class)
     public abstract static class Qualifier implements Serializable {
       public enum Kind {
@@ -130,13 +134,13 @@ public abstract class FieldAccessDescriptor implements Serializable {
     abstract FieldAccessDescriptor build();
   }
 
-  abstract boolean getAllFields();
+  public abstract boolean getAllFields();
 
-  abstract Set<FieldDescriptor> getFieldsAccessed();
+  public abstract Set<FieldDescriptor> getFieldsAccessed();
 
-  abstract Map<FieldDescriptor, FieldAccessDescriptor> getNestedFieldsAccessed();
+  public abstract Map<FieldDescriptor, FieldAccessDescriptor> getNestedFieldsAccessed();
 
-  abstract boolean getFieldInsertionOrder();
+  public abstract boolean getFieldInsertionOrder();
 
   abstract Builder toBuilder();
 
@@ -303,19 +307,11 @@ public abstract class FieldAccessDescriptor implements Serializable {
     return toBuilder().setFieldInsertionOrder(true).build();
   }
 
-  public boolean allFields() {
-    return getAllFields();
-  }
-
   public Set<Integer> fieldIdsAccessed() {
     return getFieldsAccessed()
         .stream()
         .map(FieldDescriptor::getFieldId)
         .collect(Collectors.toSet());
-  }
-
-  public Map<FieldDescriptor, FieldAccessDescriptor> nestedFields() {
-    return getNestedFieldsAccessed();
   }
 
   public Map<Integer, FieldAccessDescriptor> nestedFieldsById() {
@@ -405,7 +401,8 @@ public abstract class FieldAccessDescriptor implements Serializable {
       }
 
       // If there are nested arrays or maps, walk down them until we find the next row. If there
-      // are missing qualifiers, fill them in.
+      // are missing qualifiers, fill them in. This allows users to omit the qualifiers when they
+      // will simply be wildcard qualifiers anyway.
       FieldType fieldType = schema.getField(fieldDescriptor.getFieldId()).getType();
       Iterator<Qualifier> qualifierIt = fieldDescriptor.getQualifiers().iterator();
       List<Qualifier> qualifiers = Lists.newArrayList();
