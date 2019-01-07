@@ -435,6 +435,12 @@ public class FnApiDoFnRunner<InputT, OutputT>
     }
 
     @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
+      Row row = context.schemaCoder.getToRowFunction().apply(element());
+      return doFn.getElementParameterSchema().getFromRowFunction().apply(row);
+    }
+
+    @Override
     public Row asRow(@Nullable String id) {
       checkState(fieldAccessDescriptor.getAllFields());
       return context.schemaCoder.getToRowFunction().apply(element());
@@ -615,6 +621,11 @@ public class FnApiDoFnRunner<InputT, OutputT>
 
     @Override
     public InputT element(DoFn<InputT, OutputT> doFn) {
+      throw new UnsupportedOperationException("Element parameters are not supported.");
+    }
+
+    @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
       throw new UnsupportedOperationException("Element parameters are not supported.");
     }
 

@@ -138,6 +138,9 @@ public interface DoFnInvoker<InputT, OutputT> {
     /** Provide a link to the input element. */
     InputT element(DoFn<InputT, OutputT> doFn);
 
+    /** Provide a link to the input element. */
+    Object schemaElement(DoFn<InputT, OutputT> doFn);
+
     /** Provide a link to the input element timestamp. */
     Instant timestamp(DoFn<InputT, OutputT> doFn);
 
@@ -187,6 +190,14 @@ public interface DoFnInvoker<InputT, OutputT> {
 
     @Override
     public InputT element(DoFn<InputT, OutputT> doFn) {
+      throw new UnsupportedOperationException(
+          String.format(
+              "Should never call non-overridden methods of %s",
+              FakeArgumentProvider.class.getSimpleName()));
+    }
+
+    @Override
+    public InputT schemaElement(DoFn<InputT, OutputT> doFn) {
       throw new UnsupportedOperationException(
           String.format(
               "Should never call non-overridden methods of %s",

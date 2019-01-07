@@ -25,7 +25,6 @@ import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -108,30 +107,6 @@ public class SimpleDoFnRunner<InputT, OutputT> implements DoFnRunner<InputT, Out
   @Nullable private Map<TupleTag<?>, Coder<?>> outputCoders;
 
   @Nullable private final FieldAccessDescriptor fieldAccessDescriptor;
-
-  // This constructor exists for backwards compatibility with the Dataflow runner.
-  // Once the Dataflow runner has been updated to use the new constructor, remove this one.
-  public SimpleDoFnRunner(
-      PipelineOptions options,
-      DoFn<InputT, OutputT> fn,
-      SideInputReader sideInputReader,
-      OutputManager outputManager,
-      TupleTag<OutputT> mainOutputTag,
-      List<TupleTag<?>> additionalOutputTags,
-      StepContext stepContext,
-      WindowingStrategy<?, ?> windowingStrategy) {
-    this(
-        options,
-        fn,
-        sideInputReader,
-        outputManager,
-        mainOutputTag,
-        additionalOutputTags,
-        stepContext,
-        null,
-        Collections.emptyMap(),
-        windowingStrategy);
-  }
 
   public SimpleDoFnRunner(
       PipelineOptions options,
@@ -363,6 +338,12 @@ public class SimpleDoFnRunner<InputT, OutputT> implements DoFnRunner<InputT, Out
     }
 
     @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
+      throw new UnsupportedOperationException(
+          "Element parameters are not supported outside of @ProcessElement method.");
+    }
+
+    @Override
     public Row asRow(@Nullable String id) {
       throw new UnsupportedOperationException(
           "Cannot access element outside of @ProcessElement method.");
@@ -472,6 +453,12 @@ public class SimpleDoFnRunner<InputT, OutputT> implements DoFnRunner<InputT, Out
 
     @Override
     public InputT element(DoFn<InputT, OutputT> doFn) {
+      throw new UnsupportedOperationException(
+          "Cannot access element outside of @ProcessElement method.");
+    }
+
+    @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
       throw new UnsupportedOperationException(
           "Cannot access element outside of @ProcessElement method.");
     }
@@ -693,6 +680,12 @@ public class SimpleDoFnRunner<InputT, OutputT> implements DoFnRunner<InputT, Out
     }
 
     @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
+      Row row = schemaCoder.getToRowFunction().apply(element());
+      return doFn.getElementParameterSchema().getFromRowFunction().apply(row);
+    }
+
+    @Override
     public Row asRow(@Nullable String id) {
       checkState(fieldAccessDescriptor.getAllFields());
       return schemaCoder.getToRowFunction().apply(element());
@@ -839,6 +832,11 @@ public class SimpleDoFnRunner<InputT, OutputT> implements DoFnRunner<InputT, Out
 
     @Override
     public InputT element(DoFn<InputT, OutputT> doFn) {
+      throw new UnsupportedOperationException("Element parameters are not supported.");
+    }
+
+    @Override
+    public Object schemaElement(DoFn<InputT, OutputT> doFn) {
       throw new UnsupportedOperationException("Element parameters are not supported.");
     }
 

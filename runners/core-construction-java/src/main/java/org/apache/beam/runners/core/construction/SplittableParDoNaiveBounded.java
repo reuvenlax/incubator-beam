@@ -236,6 +236,11 @@ public class SplittableParDoNaiveBounded {
       }
 
       @Override
+      public Object schemaElement(DoFn<InputT, OutputT> doFn) {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
       public Instant timestamp(DoFn<InputT, OutputT> doFn) {
         return outerContext.timestamp();
       }

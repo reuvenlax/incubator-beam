@@ -29,6 +29,7 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.state.State;
 import org.apache.beam.sdk.state.StateSpec;
 import org.apache.beam.sdk.state.TimeDomain;
@@ -935,5 +936,12 @@ public abstract class DoFn<InputT, OutputT> implements Serializable, HasDisplayD
     interface Callback {
       void onBundleSuccess() throws Exception;
     }
+  }
+
+  // TODO: should be a list.
+  @Nullable SchemaCoder<?> elementParameterSchema = null;
+
+  public SchemaCoder<?> getElementParameterSchema() {
+    return elementParameterSchema;
   }
 }

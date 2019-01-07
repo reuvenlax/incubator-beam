@@ -355,18 +355,17 @@ public class ParDoSchemaTest implements Serializable {
                 }));
   }
 
-  /** Test POJO. */
   @DefaultSchema(JavaFieldSchema.class)
-  public static class InferredPojo {
-    public String stringField;
-    public Integer integerField;
+  static class InferredPojo {
+    String stringField;
+    Integer integerField;
 
-    public InferredPojo(String stringField, Integer integerField) {
+    InferredPojo(String stringField, Integer integerField) {
       this.stringField = stringField;
       this.integerField = integerField;
     }
 
-    public InferredPojo() {}
+    InferredPojo() {}
   }
 
   @Test
@@ -401,6 +400,41 @@ public class ParDoSchemaTest implements Serializable {
     PCollection<InferredPojo> out = pipeline.apply(Create.of(pojoList)).apply(Filter.by(e -> true));
     assertTrue(out.hasSchema());
 
+    pipeline.run();
+  }
+
+  @DefaultSchema(JavaFieldSchema.class)
+  static class InferredPojo2 {
+    Integer integerField;
+    String stringField;
+
+    InferredPojo2(String stringField, Integer integerField) {
+      this.stringField = stringField;
+      this.integerField = integerField;
+    }
+
+    InferredPojo2() {}
+  }
+
+  @Test
+  @Category({ValidatesRunner.class, UsesSchema.class})
+  public void testSchemaConversionPipeline() {
+    List<InferredPojo> pojoList =
+        Lists.newArrayList(
+            new InferredPojo("a", 1), new InferredPojo("b", 2), new InferredPojo("c", 3));
+
+    PCollection<String> output =
+        pipeline
+            .apply(Create.of(pojoList))
+            .apply(
+                ParDo.of(
+                    new DoFn<InferredPojo, String>() {
+                      @ProcessElement
+                      public void process(@Element InferredPojo2 pojo, OutputReceiver<String> r) {
+                        r.output(pojo.stringField + ":" + pojo.integerField);
+                      }
+                    }));
+    PAssert.that(output).containsInAnyOrder("a:1", "b:2", "c:3");
     pipeline.run();
   }
 }

@@ -35,6 +35,7 @@ import org.apache.beam.sdk.coders.CoderRegistry;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.schemas.FieldAccessDescriptor;
 import org.apache.beam.sdk.schemas.NoSuchSchemaException;
+import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.schemas.SchemaRegistry;
 import org.apache.beam.sdk.state.StateSpec;
@@ -48,6 +49,7 @@ import org.apache.beam.sdk.transforms.reflect.DoFnSignature.FieldAccessDeclarati
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.MethodWithExtraParameters;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.OnTimerMethod;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.RowParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.SchemaElementParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignatures;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.WindowFn;
@@ -57,6 +59,7 @@ import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.apache.beam.sdk.values.PCollectionViews;
 import org.apache.beam.sdk.values.PValue;
+import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
 import org.apache.beam.sdk.values.TypeDescriptor;
@@ -765,7 +768,59 @@ public class ParDo {
           fnDisplayData);
     }
 
+    private <ElementT> void validateSchemaConversion(
+        PCollection<? extends InputT> input,
+        TypeDescriptor<InputT> inputT,
+        TypeDescriptor<ElementT> elementT) {
+      if (elementT.equals(inputT)) {
+        // No conversions needed.
+        return;
+      }
+
+      if (!input.hasSchema()) {
+        throw new IllegalArgumentException("Type of @Element must match the DoFn type" + input);
+      }
+
+      boolean toRow = elementT.equals(TypeDescriptor.of(Row.class));
+      if (toRow) {
+        getFn().elementParameterSchema =
+            SchemaCoder.of(
+                input.getSchema(),
+                SerializableFunctions.identity(),
+                SerializableFunctions.identity());
+      } else {
+        // For now we assume the parameter is not of type Row (TODO: change this)
+        SchemaRegistry schemaRegistry = input.getPipeline().getSchemaRegistry();
+        try {
+          Schema schema = schemaRegistry.getSchema(elementT);
+          SerializableFunction<ElementT, Row> toRowFunction =
+              schemaRegistry.getToRowFunction(elementT);
+          SerializableFunction<Row, ElementT> fromRowFunction =
+              schemaRegistry.getFromRowFunction(elementT);
+          getFn().elementParameterSchema = SchemaCoder.of(schema, toRowFunction, fromRowFunction);
+
+          // assert matches input schema.
+          // TODO: Properly handle nullable.
+          if (!getFn()
+              .elementParameterSchema
+              .getSchema()
+              .assignableToIgnoreNullable(input.getSchema())) {
+            throw new IllegalArgumentException(
+                "Input to DoFn has schema: "
+                    + input.getSchema()
+                    + " However @ElementParameter of type "
+                    + elementT
+                    + " has incompatible schema "
+                    + getFn().elementParameterSchema.getSchema());
+          }
+        } catch (NoSuchSchemaException e) {
+          throw new RuntimeException("No schema registered for " + elementT);
+        }
+      }
+    }
+
     @Override
+    @SuppressWarnings("unchecked")
     public PCollectionTuple expand(PCollection<? extends InputT> input) {
       // SplittableDoFn should be forbidden on the runner-side.
       validateWindowType(input, fn);
@@ -786,6 +841,13 @@ public class ParDo {
         validateRowParameter(
             rowParameter, input.getCoder(), signature.fieldAccessDeclarations(), fn);
       }
+      SchemaElementParameter elementParameter = processElementMethod.getSchemaElementParameter();
+      if (elementParameter != null) {
+        validateSchemaConversion(
+            input,
+            (TypeDescriptor<InputT>) elementParameter.doFnInputT(),
+            elementParameter.elementT());
+      }
 
       // TODO: We should validate OutputReceiver<Row> only happens if the output PCollection
       // as schema. However coder/schema inference may not have happened yet at this point.
@@ -801,14 +863,24 @@ public class ParDo {
               input.isBounded().and(signature.isBoundedPerElement()));
       @SuppressWarnings("unchecked")
       Coder<InputT> inputCoder = ((PCollection<InputT>) input).getCoder();
+      SchemaRegistry schemaRegistry = input.getPipeline().getSchemaRegistry();
       for (PCollection<?> out : outputs.getAll().values()) {
         try {
-          out.setCoder(
-              (Coder)
-                  registry.getCoder(
-                      out.getTypeDescriptor(), getFn().getInputTypeDescriptor(), inputCoder));
-        } catch (CannotProvideCoderException e) {
-          // Ignore and let coder inference happen later.
+          Schema schema = schemaRegistry.getSchema(out.getTypeDescriptor());
+          SerializableFunction toRowFunction =
+              schemaRegistry.getToRowFunction(out.getTypeDescriptor());
+          SerializableFunction fromRowFunction =
+              schemaRegistry.getFromRowFunction(out.getTypeDescriptor());
+          out.setSchema(schema, toRowFunction, fromRowFunction);
+        } catch (NoSuchSchemaException e) {
+          try {
+            out.setCoder(
+                (Coder)
+                    registry.getCoder(
+                        out.getTypeDescriptor(), getFn().getInputTypeDescriptor(), inputCoder));
+          } catch (CannotProvideCoderException ce) {
+            // Ignore and let coder inference happen later.
+          }
         }
       }
 

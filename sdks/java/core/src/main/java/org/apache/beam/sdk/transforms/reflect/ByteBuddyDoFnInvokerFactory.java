@@ -77,6 +77,7 @@ import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.PaneInfoPa
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.ProcessContextParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.RestrictionTrackerParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.RowParameter;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.SchemaElementParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.StartBundleContextParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.StateParameter;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.Parameter.TaggedOutputReceiverParameter;
@@ -97,6 +98,7 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
   public static final String FINISH_BUNDLE_CONTEXT_PARAMETER_METHOD = "finishBundleContext";
   public static final String PROCESS_CONTEXT_PARAMETER_METHOD = "processContext";
   public static final String ELEMENT_PARAMETER_METHOD = "element";
+  public static final String SCHEMA_ELEMENT_PARAMETER_METHOD = "schemaElement";
   public static final String ROW_PARAMETER_METHOD = "asRow";
   public static final String TIMESTAMP_PARAMETER_METHOD = "timestamp";
   public static final String TIME_DOMAIN_PARAMETER_METHOD = "timeDomain";
@@ -662,6 +664,16 @@ public class ByteBuddyDoFnInvokerFactory implements DoFnInvokerFactory {
                 pushDelegate,
                 MethodInvocation.invoke(
                     getExtraContextFactoryMethodDescription(ELEMENT_PARAMETER_METHOD, DoFn.class)),
+                TypeCasting.to(new TypeDescription.ForLoadedType(p.elementT().getRawType())));
+          }
+
+          @Override
+          public StackManipulation dispatch(SchemaElementParameter p) {
+            return new StackManipulation.Compound(
+                pushDelegate,
+                MethodInvocation.invoke(
+                    getExtraContextFactoryMethodDescription(
+                        SCHEMA_ELEMENT_PARAMETER_METHOD, DoFn.class)),
                 TypeCasting.to(new TypeDescription.ForLoadedType(p.elementT().getRawType())));
           }
 
