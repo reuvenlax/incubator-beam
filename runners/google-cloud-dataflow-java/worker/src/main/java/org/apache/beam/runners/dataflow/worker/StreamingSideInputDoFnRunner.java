@@ -87,8 +87,8 @@ public class StreamingSideInputDoFnRunner<InputT, OutputT, W extends BoundedWind
       Instant outputTimestamp,
       TimeDomain timeDomain,
       CausedByDrain causedByDrain) {
-    throw new UnsupportedOperationException(
-        "Attempt to deliver a timer to a DoFn, but timers are not supported in Dataflow.");
+    simpleDoFnRunner.onTimer(
+        timerId, timerFamilyId, key, window, timestamp, outputTimestamp, timeDomain, causedByDrain);
   }
 
   @Override
