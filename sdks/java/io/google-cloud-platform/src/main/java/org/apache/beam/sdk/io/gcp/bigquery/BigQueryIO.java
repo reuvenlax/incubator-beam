@@ -54,6 +54,8 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import org.apache.arrow.flatbuf.Bool;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
@@ -2238,6 +2240,8 @@ public class BigQueryIO {
 
     abstract Boolean getAutoSchemaUpdate();
 
+    abstract Boolean getUseDefaultValues();
+
     abstract @Nullable SerializableFunction<T, String> getDeterministicRecordIdFn();
 
     abstract @Nullable String getWriteTempDataset();
@@ -2326,6 +2330,8 @@ public class BigQueryIO {
       abstract Builder<T> setUseBeamSchema(Boolean useBeamSchema);
 
       abstract Builder<T> setAutoSharding(Boolean autoSharding);
+
+      abstract Builder<T> setUseDefaultValues(Boolean useDefaultValues);
 
       abstract Builder<T> setMaxRetryJobs(int maxRetryJobs);
 
