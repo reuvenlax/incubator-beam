@@ -236,6 +236,19 @@ def commonRunnerV2ExcludeCategories = [
   'org.apache.beam.sdk.testing.UsesBoundedTrieMetrics', // Dataflow QM as of now does not support returning back BoundedTrie in metric result.
 ]
 
+def validatesRunnerParallelThreads = project.findProperty('parallelThreads') ?: '6'
+
+def isValidatesRunnerTestClass = { FileTreeElement element ->
+  if (element.isDirectory()) {
+    return true
+  }
+  if (!element.name.endsWith('.class') || element.name.startsWith('ValidateRunnerXlangTest')) {
+    return false
+  }
+  return new String(element.file.bytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+    .contains('Lorg/apache/beam/sdk/testing/ValidatesRunner;')
+}
+
 def createLegacyWorkerValidatesRunnerTest = { Map args ->
   def name = args.name
   def pipelineOptions = args.pipelineOptions ?: legacyPipelineOptions
@@ -246,14 +259,17 @@ def createLegacyWorkerValidatesRunnerTest = { Map args ->
     dependsOn ":runners:google-cloud-dataflow-java:worker:shadowJar"
 
     systemProperty "beamTestPipelineOptions", JsonOutput.toJson(pipelineOptions)
+    systemProperty "beam.validatesRunner.parallelThreads", validatesRunnerParallelThreads
 
     // Increase test parallelism up to the number of Gradle workers. By default this is equal
     // to the number of CPU cores, but can be increased by setting --max-workers=N.
     maxParallelForks Integer.MAX_VALUE
     maxHeapSize = '768m'
-    classpath = configurations.validatesRunner
+    classpath = files(project(project.path).sourceSets.test.output.classesDirs) +
+      configurations.validatesRunner
     testClassesDirs = files(project(":sdks:java:core").sourceSets.test.output.classesDirs) +
       files(project(project.path).sourceSets.test.output.classesDirs)
+    include isValidatesRunnerTestClass
     useJUnit {
       includeCategories 'org.apache.beam.sdk.testing.ValidatesRunner'
       commonLegacyExcludeCategories.each {
@@ -280,14 +296,17 @@ def createRunnerV2ValidatesRunnerTest = { Map args ->
   return tasks.create(name: name, type: Test, group: "Verification") {
     dependsOn buildAndPushDockerJavaContainer
     systemProperty "beamTestPipelineOptions", JsonOutput.toJson(pipelineOptions)
+    systemProperty "beam.validatesRunner.parallelThreads", validatesRunnerParallelThreads
 
     // Increase test parallelism up to the number of Gradle workers. By default this is equal
     // to the number of CPU cores, but can be increased by setting --max-workers=N.
     maxParallelForks Integer.MAX_VALUE
     maxHeapSize = '768m'
-    classpath = configurations.validatesRunner
+    classpath = files(project(project.path).sourceSets.test.output.classesDirs) +
+      configurations.validatesRunner
     testClassesDirs = files(project(":sdks:java:core").sourceSets.test.output.classesDirs) +
       files(project(project.path).sourceSets.test.output.classesDirs)
+    include isValidatesRunnerTestClass
     useJUnit {
       includeCategories 'org.apache.beam.sdk.testing.ValidatesRunner'
       commonRunnerV2ExcludeCategories.each {

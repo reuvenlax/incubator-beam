@@ -109,82 +109,84 @@ public class MetricsTest implements Serializable {
           pipeline.getOptions().getRunner().getName()
               + ":"
               + System.getProperty(TestPipeline.PROPERTY_BEAM_TEST_PIPELINE_OPTIONS, "");
-      PipelineResult cachedResult = CACHED_METRIC_PIPELINE_RESULTS.get(cacheKey);
-      if (cachedResult != null) {
-        return cachedResult;
+      synchronized (CACHED_METRIC_PIPELINE_RESULTS) {
+        PipelineResult cachedResult = CACHED_METRIC_PIPELINE_RESULTS.get(cacheKey);
+        if (cachedResult != null) {
+          return cachedResult;
+        }
+        final Counter count = Metrics.counter(MetricsTest.class, "count");
+        StringSet sideinputs = Metrics.stringSet(MetricsTest.class, "sideinputs");
+        final TupleTag<Integer> output1 = new TupleTag<Integer>() {};
+        final TupleTag<Integer> output2 = new TupleTag<Integer>() {};
+        pipeline
+            .apply(Create.of(5, 8, 13))
+            .apply(
+                "MyStep1",
+                ParDo.of(
+                    new DoFn<Integer, Integer>() {
+                      Distribution bundleDist = Metrics.distribution(MetricsTest.class, "bundle");
+
+                      @StartBundle
+                      public void startBundle() {
+                        bundleDist.update(10L);
+                      }
+
+                      @SuppressWarnings("unused")
+                      @ProcessElement
+                      public void processElement(ProcessContext c) {
+                        Distribution values = Metrics.distribution(MetricsTest.class, "input");
+                        StringSet sources = Metrics.stringSet(MetricsTest.class, "sources");
+                        BoundedTrie boundedTrieSources =
+                            Metrics.boundedTrie(MetricsTest.class, "boundedTrieSources");
+                        count.inc();
+                        values.update(c.element());
+
+                        c.output(c.element());
+                        c.output(c.element());
+                        sources.add("gcs");
+                        sources.add("gcs"); // repeated should appear once
+                        sources.add("gcs", "gcs"); // repeated should appear once
+                        sideinputs.add("bigtable", "spanner");
+                        boundedTrieSources.add(ImmutableList.of("ab_source", "cd_source"));
+                        boundedTrieSources.add(ImmutableList.of("ef_source"));
+                      }
+
+                      @DoFn.FinishBundle
+                      public void finishBundle() {
+                        bundleDist.update(40L);
+                      }
+                    }))
+            .apply(
+                "MyStep2",
+                ParDo.of(
+                        new DoFn<Integer, Integer>() {
+                          @SuppressWarnings("unused")
+                          @ProcessElement
+                          public void processElement(ProcessContext c) {
+                            Distribution values = Metrics.distribution(MetricsTest.class, "input");
+                            Gauge gauge = Metrics.gauge(MetricsTest.class, "my-gauge");
+                            StringSet sinks = Metrics.stringSet(MetricsTest.class, "sinks");
+                            BoundedTrie boundedTrieSinks =
+                                Metrics.boundedTrie(MetricsTest.class, "boundedTrieSinks");
+                            Integer element = c.element();
+                            count.inc();
+                            values.update(element);
+                            gauge.set(12L);
+                            c.output(element);
+                            sinks.add("bq", "kafka", "kafka"); // repeated should appear once
+                            sideinputs.add("bigtable", "sql");
+                            boundedTrieSinks.add(ImmutableList.of("ab_sink", "cd_sink"));
+                            boundedTrieSinks.add(ImmutableList.of("ef_sink"));
+                            c.output(output2, element);
+                          }
+                        })
+                    .withOutputTags(output1, TupleTagList.of(output2)));
+        PipelineResult result = pipeline.run();
+
+        result.waitUntilFinish();
+        CACHED_METRIC_PIPELINE_RESULTS.put(cacheKey, result);
+        return result;
       }
-      final Counter count = Metrics.counter(MetricsTest.class, "count");
-      StringSet sideinputs = Metrics.stringSet(MetricsTest.class, "sideinputs");
-      final TupleTag<Integer> output1 = new TupleTag<Integer>() {};
-      final TupleTag<Integer> output2 = new TupleTag<Integer>() {};
-      pipeline
-          .apply(Create.of(5, 8, 13))
-          .apply(
-              "MyStep1",
-              ParDo.of(
-                  new DoFn<Integer, Integer>() {
-                    Distribution bundleDist = Metrics.distribution(MetricsTest.class, "bundle");
-
-                    @StartBundle
-                    public void startBundle() {
-                      bundleDist.update(10L);
-                    }
-
-                    @SuppressWarnings("unused")
-                    @ProcessElement
-                    public void processElement(ProcessContext c) {
-                      Distribution values = Metrics.distribution(MetricsTest.class, "input");
-                      StringSet sources = Metrics.stringSet(MetricsTest.class, "sources");
-                      BoundedTrie boundedTrieSources =
-                          Metrics.boundedTrie(MetricsTest.class, "boundedTrieSources");
-                      count.inc();
-                      values.update(c.element());
-
-                      c.output(c.element());
-                      c.output(c.element());
-                      sources.add("gcs");
-                      sources.add("gcs"); // repeated should appear once
-                      sources.add("gcs", "gcs"); // repeated should appear once
-                      sideinputs.add("bigtable", "spanner");
-                      boundedTrieSources.add(ImmutableList.of("ab_source", "cd_source"));
-                      boundedTrieSources.add(ImmutableList.of("ef_source"));
-                    }
-
-                    @DoFn.FinishBundle
-                    public void finishBundle() {
-                      bundleDist.update(40L);
-                    }
-                  }))
-          .apply(
-              "MyStep2",
-              ParDo.of(
-                      new DoFn<Integer, Integer>() {
-                        @SuppressWarnings("unused")
-                        @ProcessElement
-                        public void processElement(ProcessContext c) {
-                          Distribution values = Metrics.distribution(MetricsTest.class, "input");
-                          Gauge gauge = Metrics.gauge(MetricsTest.class, "my-gauge");
-                          StringSet sinks = Metrics.stringSet(MetricsTest.class, "sinks");
-                          BoundedTrie boundedTrieSinks =
-                              Metrics.boundedTrie(MetricsTest.class, "boundedTrieSinks");
-                          Integer element = c.element();
-                          count.inc();
-                          values.update(element);
-                          gauge.set(12L);
-                          c.output(element);
-                          sinks.add("bq", "kafka", "kafka"); // repeated should appear once
-                          sideinputs.add("bigtable", "sql");
-                          boundedTrieSinks.add(ImmutableList.of("ab_sink", "cd_sink"));
-                          boundedTrieSinks.add(ImmutableList.of("ef_sink"));
-                          c.output(output2, element);
-                        }
-                      })
-                  .withOutputTags(output1, TupleTagList.of(output2)));
-      PipelineResult result = pipeline.run();
-
-      result.waitUntilFinish();
-      CACHED_METRIC_PIPELINE_RESULTS.put(cacheKey, result);
-      return result;
     }
   }
 
